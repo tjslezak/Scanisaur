@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections import defaultdict
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 
 from sqlglot import exp
 from sqlglot.errors import OptimizeError, SqlglotError
@@ -52,10 +51,10 @@ _MAX_LISTED = 8
 _DESCRIBE = "List the columns with scanisaur_schema_describe."
 _SEARCH = "Find the table with scanisaur_schema_search."
 
-_Key = tuple[str, str, str]
-#: The names in a SELECT's `* EXCEPT (...)` and `* REPLACE (... AS name)` lists, with
-#: the star's table qualifier ("" for a bare star) and the keyword.
-_StarList = tuple[str, str, list[exp.Expr]]
+#: A table reference by its (project, dataset, name) as written in the qualified tree.
+TableKey = tuple[str, str, str]
+#: The node ``meta`` key that holds a SELECT's stars.
+_STARS = "scanisaur.stars"
 
 
 class ResolveError(Exception):
@@ -63,13 +62,29 @@ class ResolveError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class StarUse:
+    """A ``*`` or ``alias.*`` in a SELECT list, as written before qualify() expanded it."""
+
+    #: The table alias of ``alias.*``; empty for a bare ``*``.
+    qualifier: str
+    #: The names in ``* EXCEPT (...)``.
+    excepted: tuple[exp.Expr, ...] = ()
+    #: The new names in ``* REPLACE (... AS name)``.
+    replaced: tuple[exp.Expr, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Resolution:
-    #: The statement qualified against the catalog, with stars expanded; None when a
-    #: name the statement depends on is unknown.
+    #: The statement qualified against the catalog: stars expanded, every column and
+    #: unambiguous pseudo-column attributed to its source. None when a name the
+    #: statement depends on is unknown.
     qualified: exp.Expr | None
     #: Catalog tables the statement reads, each listed once, in the order written.
     tables: tuple[Table, ...]
     findings: tuple[Finding, ...]
+    #: The catalog table behind each table reference in ``qualified``. The stars each
+    #: SELECT was written with are on the node: see ``stars_of()``.
+    references: Mapping[TableKey, Table] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +118,7 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
         raise ResolveError(str(error)) from error
     references.sort(key=_position_key)
 
-    by_reference: dict[_Key, Table] = {}
+    by_reference: dict[TableKey, Table] = {}
     findings = list(_insert_target(tree, catalog)) if isinstance(tree, exp.Insert) else []
     for node in references:
         table = catalog.find(node.name, node.db or None, node.catalog or None)
@@ -116,7 +131,7 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     if findings:
         return Resolution(None, tables, _unique(findings))
 
-    star_lists = _star_lists(tree)  # qualify() expands the stars and drops these lists
+    _record_stars(tree)  # qualify() expands them and drops EXCEPT and REPLACE
     try:
         qualified = qualify(
             tree,
@@ -132,8 +147,8 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
         return Resolution(None, tables, (finding,))
     except SqlglotError as error:  # e.g. a catalog column type sqlglot can't parse
         raise ResolveError(str(error)) from error
-    findings = list(_column_findings(qualified, by_reference, star_lists))
-    return Resolution(qualified, tables, _unique(findings))
+    findings = list(_column_findings(qualified, by_reference))
+    return Resolution(qualified, tables, _unique(findings), by_reference)
 
 
 def _table_nodes(scope: Scope) -> Iterator[exp.Table]:
@@ -207,10 +222,16 @@ def _insert_target(tree: exp.Insert, catalog: Catalog) -> Iterator[Finding]:
             )
 
 
-def _star_lists(tree: exp.Expr) -> dict[int, list[_StarList]]:
-    """The EXCEPT and REPLACE names of each SELECT's stars, by the SELECT's identity."""
-    lists: dict[int, list[_StarList]] = defaultdict(list)
+def stars_of(select: exp.Expr) -> tuple[StarUse, ...]:
+    """The stars ``select`` was written with, recorded before qualify() expanded them."""
+    stars = select.meta.get(_STARS)
+    return stars if isinstance(stars, tuple) else ()
+
+
+def _record_stars(tree: exp.Expr) -> None:
+    """Keep each SELECT's stars on the node, where they survive qualify()."""
     for select in tree.find_all(exp.Select):
+        stars: list[StarUse] = []
         for projection in select.expressions:
             if isinstance(projection, exp.Star):
                 star, qualifier = projection, ""
@@ -218,12 +239,16 @@ def _star_lists(tree: exp.Expr) -> dict[int, list[_StarList]]:
                 star, qualifier = projection.this, projection.table
             else:
                 continue
-            if excepted := star.args.get("except_"):
-                lists[id(select)].append((qualifier, "EXCEPT", list(excepted)))
-            if replaced := star.args.get("replace"):
-                aliases = [r.args["alias"] for r in replaced if isinstance(r, exp.Alias)]
-                lists[id(select)].append((qualifier, "REPLACE", aliases))
-    return lists
+            replaced = star.args.get("replace") or []
+            stars.append(
+                StarUse(
+                    qualifier,
+                    tuple(star.args.get("except_") or ()),
+                    tuple(r.args["alias"] for r in replaced if isinstance(r, exp.Alias)),
+                )
+            )
+        if stars:
+            select.meta[_STARS] = tuple(stars)
 
 
 def _complete_name(node: exp.Table, table: Table) -> None:
@@ -238,7 +263,7 @@ def _complete_name(node: exp.Table, table: Table) -> None:
         node.set("catalog", exp.to_identifier(table.project))
 
 
-def _schema(by_reference: dict[_Key, Table]) -> dict[str, object]:
+def _schema(by_reference: dict[TableKey, Table]) -> dict[str, object]:
     """A sqlglot schema for the referenced tables only, keyed by the names as written."""
     schema: dict[str, dict[str, dict[str, dict[str, str]]]] = {}
     for (project, dataset, name), table in by_reference.items():
@@ -247,9 +272,7 @@ def _schema(by_reference: dict[_Key, Table]) -> dict[str, object]:
     return dict(schema)
 
 
-def _column_findings(
-    qualified: exp.Expr, by_reference: dict[_Key, Table], star_lists: dict[int, list[_StarList]]
-) -> Iterator[Finding]:
+def _column_findings(qualified: exp.Expr, by_reference: dict[TableKey, Table]) -> Iterator[Finding]:
     for scope in traverse_scope(qualified):
         if isinstance(scope.expression, exp.SetOperation):
             yield from _set_operation_columns(scope)  # each branch is a scope of its own
@@ -265,11 +288,11 @@ def _column_findings(
             if finding is not None:
                 yield finding
         yield from _pseudo_columns(scope, visible)
-        for star_list in star_lists.get(id(scope.expression), ()):
-            yield from _check_star_list(star_list, visible)
+        for star in stars_of(scope.expression):
+            yield from _check_star(star, visible)
 
 
-def _visible(scope: Scope, by_reference: dict[_Key, Table]) -> _Visible:
+def _visible(scope: Scope, by_reference: dict[TableKey, Table]) -> _Visible:
     levels: _Visible = []
     current: Scope | None = scope
     while current is not None:
@@ -278,7 +301,7 @@ def _visible(scope: Scope, by_reference: dict[_Key, Table]) -> _Visible:
     return levels
 
 
-def _sources(scope: Scope, by_reference: dict[_Key, Table]) -> dict[str, _Source]:
+def _sources(scope: Scope, by_reference: dict[TableKey, Table]) -> dict[str, _Source]:
     sources: dict[str, _Source] = {}
     for alias, (node, source) in scope.selected_sources.items():
         if isinstance(source, exp.Table) and not _in_catalog(source):
@@ -444,26 +467,26 @@ def _set_operation_columns(scope: Scope) -> Iterator[Finding]:
         )
 
 
-def _check_star_list(star_list: _StarList, visible: _Visible) -> Iterator[Finding]:
+def _check_star(star: StarUse, visible: _Visible) -> Iterator[Finding]:
     """Every name in `* EXCEPT (...)` or `* REPLACE (... AS name)` must be a star column."""
-    qualifier, keyword, names = star_list
     level = visible[0]
-    if qualifier:
-        source = level.get(qualifier) or level.get(qualifier.lower())
+    if star.qualifier:
+        source = level.get(star.qualifier) or level.get(star.qualifier.lower())
         sources = [source] if source is not None else []
     else:
         sources = list(level.values())
     if not sources or any(source.columns is None for source in sources):
         return
     candidates = [c for source in sources for c in source.columns or ()]
-    for node in names:
-        if any(source.has(node.name) for source in sources):
-            continue
-        yield _finding(
-            f"`{node.name}` in `* {keyword}` is not a column of {_where(sources)}.",
-            _suggest(_closest(node.name, candidates)) or _no_match(sources),
-            node,
-        )
+    for keyword, names in (("EXCEPT", star.excepted), ("REPLACE", star.replaced)):
+        for node in names:
+            if any(source.has(node.name) for source in sources):
+                continue
+            yield _finding(
+                f"`{node.name}` in `* {keyword}` is not a column of {_where(sources)}.",
+                _suggest(_closest(node.name, candidates)) or _no_match(sources),
+                node,
+            )
 
 
 def _using_error(error: OptimizeError, tree: exp.Expr, tables: tuple[Table, ...]) -> Finding | None:

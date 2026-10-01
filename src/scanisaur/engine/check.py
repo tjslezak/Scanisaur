@@ -10,13 +10,17 @@ from typing import Literal
 from sqlglot import exp
 
 from scanisaur.catalog.model import Catalog, Table
-from scanisaur.engine.parse import SqlParseError, classify, describe, parse
+from scanisaur.engine.parse import (
+    DIALECT,
+    SqlParseError,
+    classify,
+    describe,
+    parse,
+    resolvable,
+)
 from scanisaur.engine.resolve import ResolveError, resolve
 from scanisaur.engine.result import CheckResult, Finding, Severity, verdict_for
 from scanisaur.engine.rules import UNANALYZABLE, WRITE_STATEMENT
-
-#: The SQL dialect checked. Table and column matching follow BigQuery's rules.
-DIALECT = "bigquery"
 
 #: Writes whose names are checked when the policy allows writes: the query they run,
 #: and an INSERT's target. Names in other writes (UPDATE, MERGE, ...) aren't checked yet.
@@ -89,8 +93,7 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy) -> tuple[list[Finding],
         message = f"Names in {describe(tree)} statements aren't checked yet."
         return [_unanalyzable(policy, message, _BY_HAND)], ()
     try:
-        # EXPORT DATA names its tables and columns in the query it exports.
-        resolution = resolve(tree.this if isinstance(tree, exp.Export) else tree, catalog, DIALECT)
+        resolution = resolve(resolvable(tree), catalog, DIALECT)
     except ResolveError as error:
         message = f"Names could not be resolved: {error}."
         return [_unanalyzable(policy, message, _BY_HAND)], ()

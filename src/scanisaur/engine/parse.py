@@ -12,6 +12,9 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
+#: The SQL dialect Scanisaur checks. Table and column matching follow BigQuery's rules.
+DIALECT = "bigquery"
+
 #: ``query`` reads data; ``write`` changes data, schema or access, exports data, or runs SQL
 #: that isn't visible here (CALL, EXECUTE IMMEDIATE);
 #: ``other`` can't be analyzed (scripting, transactions, unsupported commands).
@@ -95,6 +98,11 @@ def parse(sql: str, dialect: str) -> list[exp.Expr]:
         except TokenError as error:
             raise SqlParseError(str(error)) from error
     return [tree for tree in trees if tree is not None]
+
+
+def resolvable(tree: exp.Expr) -> exp.Expr:
+    """The part of a statement whose names are checked: EXPORT DATA's query, or all of it."""
+    return tree.this if isinstance(tree, exp.Export) else tree
 
 
 def classify(tree: exp.Expr) -> StatementKind:
