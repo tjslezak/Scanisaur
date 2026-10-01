@@ -1,7 +1,7 @@
 # Logo drafts
 
-Nine first-pass directions for the Scanisaur mark. Each one is a standalone
-SVG with no external fonts or images. 01–08 are 512×512; 09 is a wide banner.
+Twelve logo drafts for Scanisaur. Each one is a standalone
+SVG with no external fonts or images. Most are 512×512; 09 and 12 are wide banners.
 
 ![Logo drafts preview](preview.png)
 
@@ -18,6 +18,9 @@ Open `preview.html` in a browser to see the same sheet live.
 | 07 | [`07-ascii-rex-head.svg`](07-ascii-rex-head.svg) | Lime ASCII T-rex head on black, roaring, as an app icon. |
 | 08 | [`08-ascii-rex.svg`](08-ascii-rex.svg) | Full-body lime ASCII T-rex above a `$ scanisaur` prompt. |
 | 09 | [`09-ascii-banner.svg`](09-ascii-banner.svg) | Wide banner: ASCII rex, `SCANISAUR` in a `#` pixel font, and the tagline. |
+| 10 | [`10-outline-rex.svg`](10-outline-rex.svg) | Playful outline ASCII T-rex (smile, tiny `=` arms) above a `$ scanisaur` prompt. |
+| 11 | [`11-outline-rex-icon.svg`](11-outline-rex-icon.svg) | The outline rex as an app icon, tail running off the left edge. |
+| 12 | [`12-outline-banner.svg`](12-outline-banner.svg) | Wide banner: outline rex, `SCANISAUR` in a rounded figlet font, and the tagline. |
 
 ## Palette
 
@@ -29,7 +32,7 @@ Open `preview.html` in a browser to see the same sheet live.
 | Scan amber (accent) | `#FFB020` |
 | Bone (teeth) | `#F4EFE3` |
 
-The ASCII drafts (07–09) use their own two colors: lime `#A6FF00` on
+The ASCII drafts (07–12) use their own two colors: lime `#A6FF00` on
 near-black `#050805`, with a soft phosphor glow.
 
 ## Notes for picking one
@@ -41,8 +44,12 @@ near-black `#050805`, with a soft phosphor glow.
   light variant before they can be used there.
 - **ASCII drafts:** the characters are glyph outlines taken from DejaVu Sans
   Mono Bold, so they look the same everywhere without needing the font. That
-  makes the files larger (16–40 KB). At 32 px and below they turn into lime
-  texture, so 07 would need a simplified favicon.
+  makes the files larger (5–40 KB). At 32 px and below the filled ones turn
+  into lime texture and the outline ones fade out, so 07 and 11 would each
+  need a simplified favicon.
+- **Outline rex (10–12):** hand-traced from a vector drawing, so the
+  character placement can be fine-tuned by hand. The eye is an `o`; a happy
+  squint `^` is an easy swap. The wordmark uses the figlet "big" font.
 - **Wordmark:** the preview sets "Scanisaur" in a system sans-serif as a
   placeholder. A final lockup should use a chosen typeface converted to
   outlines.
