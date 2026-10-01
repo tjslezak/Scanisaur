@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scanisaur"
+version = "0.0.1"
+description = "Schema-aware pre-flight checks for AI-agent SQL, using warehouse metadata only."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Scanisaur contributors" }]
+keywords = ["mcp", "sql", "bigquery", "data-warehouse", "ai-agents", "query-optimization"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Database",
+  "Typing :: Typed",
+]
+dependencies = ["typer>=0.15"]
+
+[project.urls]
+Homepage = "https://github.com/tjslezak/Scanisaur"
+Issues = "https://github.com/tjslezak/Scanisaur/issues"
+
+[project.scripts]
+scanisaur = "scanisaur.cli:app"
+
+[dependency-groups]
+dev = [
+  "mypy>=2.3",
+  "pre-commit>=4.6",
+  "pytest>=9.1",
+  "pytest-cov>=7.1",
+  "ruff>=0.16",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scanisaur"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["B", "C4", "E", "F", "I", "N", "PT", "RUF", "SIM", "UP", "W"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+source = ["scanisaur"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
