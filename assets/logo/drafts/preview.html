@@ -67,6 +67,8 @@
   h2 small { color: var(--muted); font-weight: 600; margin-right: 6px; }
   .card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
   .row { display: flex; gap: 10px; }
+  .card.wide { grid-column: 1 / -1; }
+  .card.wide .hero img { width: 100%; max-width: 960px; height: auto; }
   .row .sizes { flex: 1; }
   @media (max-width: 960px) { .grid { grid-template-columns: repeat(2, 1fr); } }
   @media (max-width: 640px) {
@@ -78,7 +80,7 @@
 <body>
 <header>
   <h1>Scanisaur logo drafts</h1>
-  <p>Six directions for the apex predator of agent-generated SQL. Each mark is shown large, at 64/32/16&nbsp;px on light and dark backgrounds, and next to the wordmark.</p>
+  <p>Nine directions for the apex predator of agent-generated SQL. Each mark is shown large, at 64/32/16&nbsp;px on light and dark backgrounds, and next to the wordmark. 07–09 are the lime ASCII T-rex direction.</p>
 </header>
 <main class="grid" id="grid"></main>
 <script>
@@ -95,10 +97,25 @@
      "A three-toed footprint in a viewfinder. Everything above the scan line has been checked; the rest is next."],
     ["06-fang-lens", "Fang Lens",
      "A magnifying glass whose lens is a set of jaws, with a scan beam between the teeth. Simple and very readable."],
+    ["07-ascii-rex-head", "ASCII Rex Head",
+     "Lime ASCII T-rex head on black, roaring, with V and ^ teeth. A terminal-native app icon for a CLI tool."],
+    ["08-ascii-rex", "ASCII Rex",
+     "The full-body lime ASCII T-rex above a $ scanisaur prompt and block cursor. Reads like a CLI splash screen."],
+    ["09-ascii-banner", "ASCII Banner",
+     "Wide lockup for the README header or social cards: the ASCII rex, SCANISAUR in a # pixel font, and the tagline at a prompt.", true],
   ];
   const grid = document.getElementById("grid");
-  for (const [file, name, blurb] of drafts) {
+  for (const [file, name, blurb, wide] of drafts) {
     const src = `${file}.svg`;
+    if (wide) {
+      grid.insertAdjacentHTML("beforeend", `
+        <article class="card wide">
+          <div class="hero"><img src="${src}" alt="${name} logo draft"></div>
+          <h2><small>${file.slice(0, 2)}</small>${name}</h2>
+          <p>${blurb}</p>
+        </article>`);
+      continue;
+    }
     const sizes = [64, 32, 16].map(s => `<img src="${src}" width="${s}" height="${s}" alt="">`).join("");
     grid.insertAdjacentHTML("beforeend", `
       <article class="card">
