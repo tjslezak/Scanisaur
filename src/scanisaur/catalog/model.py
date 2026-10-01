@@ -62,8 +62,11 @@ class Table:
         names: set[str] = set()
         if self.is_wildcard:
             names.add(TABLE_SUFFIX)
-        if self.partitioning is not None and self.partitioning.column is None:
-            names |= {PARTITIONTIME, PARTITIONDATE}
+        partitioning = self.partitioning
+        if partitioning is not None and partitioning.column is None:
+            names.add(PARTITIONTIME)
+            if partitioning.granularity == "DAY":
+                names.add(PARTITIONDATE)  # BigQuery has it on daily partitions only
         return frozenset(names)
 
     def column(self, name: str) -> Column | None:
@@ -89,7 +92,8 @@ class Catalog:
         """Find a table by its name parts, filling in the default project and dataset.
 
         Table names are case-sensitive, as in BigQuery. A narrower wildcard such as
-        ``events_2026*`` resolves to its family ``events_*``.
+        ``events_2026*`` resolves to its family ``events_*``, the longest one that matches
+        when families overlap (``events_intraday_*`` before ``events_*``).
         """
         project = project or self.default_project
         dataset = dataset or self.default_dataset
@@ -99,13 +103,11 @@ class Catalog:
         if table is not None or not name.endswith("*"):
             return table
         prefix = name[:-1]
-        return next(
-            (
-                t
-                for t in self.tables
-                if t.is_wildcard
-                and (t.project, t.dataset) == (project, dataset)
-                and prefix.startswith(t.name[:-1])
-            ),
-            None,
-        )
+        families = [
+            t
+            for t in self.tables
+            if t.is_wildcard
+            and (t.project, t.dataset) == (project, dataset)
+            and prefix.startswith(t.name[:-1])
+        ]
+        return max(families, key=lambda t: len(t.name), default=None)

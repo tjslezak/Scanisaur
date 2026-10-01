@@ -43,6 +43,11 @@ class TestTable:
         ingestion = make_table("i", partitioning=Partitioning(None, "DAY"))
         assert ingestion.pseudo_columns == {PARTITIONTIME, PARTITIONDATE}
 
+    @pytest.mark.parametrize("granularity", ["HOUR", "MONTH", "YEAR"])
+    def test_partitiondate_only_on_daily_ingestion_partitions(self, granularity: str) -> None:
+        table = make_table("i", partitioning=Partitioning(None, granularity))  # type: ignore[arg-type]
+        assert table.pseudo_columns == {PARTITIONTIME}
+
 
 class TestCatalogFind:
     @pytest.mark.parametrize(
@@ -75,6 +80,21 @@ class TestCatalogFind:
     )
     def test_misses(self, name: str, dataset: str | None, project: str | None) -> None:
         assert CATALOG.find(name, dataset, project) is None
+
+    def test_overlapping_wildcard_families_take_the_longest(self) -> None:
+        catalog = Catalog(
+            tables=(make_table("ev_*"), make_table("ev_intraday_*"), make_table("ev_in*")),
+            default_project="proj",
+            default_dataset="analytics",
+        )
+        for name, expected in [
+            ("ev_intraday_2026*", "ev_intraday_*"),
+            ("ev_in_2026*", "ev_in*"),
+            ("ev_2026*", "ev_*"),
+        ]:
+            table = catalog.find(name)
+            assert table is not None
+            assert table.name == expected
 
     def test_needs_defaults_for_partial_names(self) -> None:
         catalog = Catalog(tables=(make_table("events"),))
@@ -152,6 +172,10 @@ tables:
                 "unknown columns: ['b']",
             ),
             (
+                "tables:\n  - {name: p.d.t, columns: {a: NOT A TYPE}}\n",
+                "column 'a' has a type that isn't valid: 'NOT A TYPE'",
+            ),
+            (
                 "tables:\n"
                 "  - {name: p.d.t, columns: {a: INT64}}\n"
                 "  - {name: p.d.t, columns: {b: INT64}}\n",
@@ -164,6 +188,21 @@ tables:
         with pytest.raises(FixtureError, match=str(path)) as error:
             load_catalog(path)
         assert reason in str(error.value)
+
+    def test_nested_types_are_valid(self, tmp_path: Path) -> None:
+        path = write(
+            tmp_path,
+            "tables:\n  - name: p.d.t\n    columns:\n"
+            "      a: ARRAY<STRUCT<key STRING, value STRUCT<n INT64, s STRING>>>\n"
+            "      b: NUMERIC(10, 2)\n",
+        )
+        assert len(load_catalog(path).tables[0].columns) == 2
+
+    def test_not_utf8(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.yaml"
+        path.write_bytes(b"\xff")
+        with pytest.raises(FixtureError, match="utf-8"):
+            load_catalog(path)
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(FixtureError, match="No such file"):

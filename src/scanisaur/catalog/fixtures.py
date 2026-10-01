@@ -30,6 +30,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from scanisaur.catalog.model import Catalog, Column, Granularity, Partitioning, Table, TableKind
 
@@ -57,6 +59,18 @@ class _TableSpec(_Spec):
     clustering: tuple[str, ...] = ()
     description: str = ""
     columns: dict[str, str] = Field(min_length=1)
+
+    @field_validator("columns")
+    @classmethod
+    def _known_types(cls, columns: dict[str, str]) -> dict[str, str]:
+        for name, type_ in columns.items():
+            try:
+                exp.DataType.build(type_, dialect="bigquery")
+            except SqlglotError as error:
+                raise ValueError(
+                    f"column {name!r} has a type that isn't valid: {type_!r}"
+                ) from error
+        return columns
 
     @field_validator("name")
     @classmethod
@@ -115,7 +129,7 @@ def load_catalog(path: str | os.PathLike[str]) -> Catalog:
     path = Path(path)
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as error:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
         raise FixtureError(f"{path}: {error}") from error
     try:
         spec = _CatalogSpec.model_validate(data)

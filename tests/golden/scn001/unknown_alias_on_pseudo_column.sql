@@ -1,0 +1,3 @@
+SELECT i.payload
+FROM raw.ingest i
+WHERE zz._PARTITIONTIME IS NULL

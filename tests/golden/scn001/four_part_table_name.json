@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `proj.analytics.events.extra` does not exist.",
+      "fix": "Write the table as `project.dataset.table`.",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": []
+}

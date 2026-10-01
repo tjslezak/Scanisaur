@@ -72,13 +72,13 @@ class TestCheckCommand:
         assert payload["findings"][0]["rule"] == "SCN001"
 
     def test_warning_passes_unless_strict(self) -> None:
-        assert run_check(sql="CALL proc()").exit_code == EXIT_OK
-        strict = run_check("--strict", sql="CALL proc()")
+        assert run_check(sql="DECLARE x INT64").exit_code == EXIT_OK
+        strict = run_check("--strict", sql="DECLARE x INT64")
         assert strict.exit_code == EXIT_BLOCKED
-        assert "  -       SCN000  warn   CALL statements can't be checked." in strict.stdout
+        assert "  -       SCN000  warn   DECLARE statements can't be checked." in strict.stdout
 
     def test_fail_closed(self) -> None:
-        result = run_check("--fail-closed", sql="CALL proc()")
+        result = run_check("--fail-closed", sql="DECLARE x INT64")
         assert result.exit_code == EXIT_BLOCKED
         assert result.stdout.startswith("block:")
 
@@ -98,6 +98,20 @@ class TestCheckCommand:
         result = run_check(str(tmp_path / "missing.sql"))
         assert result.exit_code == EXIT_ERROR
         assert "No such file" in result.stderr
+
+    def test_sql_not_utf8(self, tmp_path: Path) -> None:
+        path = tmp_path / "query.sql"
+        path.write_bytes(b"SELECT \xff")
+        result = run_check(str(path))
+        assert result.exit_code == EXIT_ERROR
+        assert result.stderr.startswith(f"error: {path}: 'utf-8' codec")
+
+    def test_catalog_not_utf8(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.yaml"
+        path.write_bytes(b"\xff")
+        result = runner.invoke(app, ["check", "--catalog", str(path)], input="SELECT 1")
+        assert result.exit_code == EXIT_ERROR
+        assert "utf-8" in result.stderr
 
     def test_missing_catalog_is_a_usage_error(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["check", "--catalog", str(tmp_path / "none.yaml")])

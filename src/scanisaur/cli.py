@@ -66,7 +66,6 @@ def check_command(
     source: Annotated[
         str, typer.Argument(help="SQL file to check, or '-' to read standard input.")
     ] = "-",
-    dialect: Annotated[str, typer.Option(help="SQL dialect.")] = "bigquery",
     allow_writes: Annotated[
         bool, typer.Option("--allow-writes", help="Don't block write and DDL statements.")
     ] = False,
@@ -79,7 +78,7 @@ def check_command(
     ] = False,
     as_json: Annotated[bool, typer.Option("--json", help="Print the full result as JSON.")] = False,
 ) -> None:
-    """Check one SQL statement.
+    """Check one BigQuery SQL statement.
 
     Exit codes: 0 may run; 1 blocked (or warned, with --strict); 2 usage or input error.
     """
@@ -90,12 +89,12 @@ def check_command(
         raise typer.Exit(EXIT_ERROR) from error
     try:
         sql = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
-    except OSError as error:
-        typer.echo(f"error: {error}", err=True)
+    except (OSError, UnicodeDecodeError) as error:
+        typer.echo(f"error: {'standard input' if source == '-' else source}: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
 
     policy = Policy(read_only=not allow_writes, fail_mode="closed" if fail_closed else "open")
-    result = check(sql, loaded, policy=policy, dialect=dialect)
+    result = check(sql, loaded, policy=policy)
     typer.echo(result.model_dump_json(indent=2) if as_json else _format(result))
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}

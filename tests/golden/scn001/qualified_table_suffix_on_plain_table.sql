@@ -1,0 +1,3 @@
+SELECT e.user_id
+FROM events e
+WHERE e._TABLE_SUFFIX = '20260901'

@@ -12,7 +12,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
-#: ``query`` reads data; ``write`` changes data, schema, access or exports data;
+#: ``query`` reads data; ``write`` changes data, schema or access, exports data, or runs SQL
+#: that isn't visible here (CALL, EXECUTE IMMEDIATE);
 #: ``other`` can't be analyzed (scripting, transactions, unsupported commands).
 StatementKind = Literal["query", "write", "other"]
 
@@ -27,12 +28,43 @@ _WRITES = (
     exp.Drop,
     exp.Alter,
     exp.Grant,
+    exp.Revoke,
     exp.Export,
+    exp.LoadData,
+    exp.Copy,
+    exp.Execute,
+    exp.ExecuteSql,
+)
+#: sqlglot keeps statements it can't fully parse (CREATE SNAPSHOT TABLE, ALTER SCHEMA,
+#: CALL, EXECUTE IMMEDIATE) as a raw Command; its first keyword says whether it can write.
+#: CALL and EXECUTE IMMEDIATE run SQL that isn't visible here, so they count as writes.
+_WRITE_COMMANDS = frozenset(
+    {
+        "ALTER",
+        "CALL",
+        "COPY",
+        "CREATE",
+        "DELETE",
+        "DROP",
+        "EXECUTE",
+        "EXPORT",
+        "GRANT",
+        "INSERT",
+        "LOAD",
+        "MERGE",
+        "RENAME",
+        "REPLACE",
+        "REVOKE",
+        "TRUNCATE",
+        "UNDROP",
+        "UPDATE",
+    }
 )
 #: Statement names where sqlglot's node name differs from the SQL keyword.
 _NAMES = {
     "TRUNCATETABLE": "TRUNCATE TABLE",
     "EXPORT": "EXPORT DATA",
+    "LOADDATA": "LOAD DATA",
     "TRANSACTION": "BEGIN TRANSACTION",
 }
 #: sqlglot error messages embed token reprs such as ``<Token token_type: ..., text: WHERE, ...>``.
@@ -69,6 +101,8 @@ def classify(tree: exp.Expr) -> StatementKind:
     if isinstance(tree, _QUERIES):
         return "query"
     if isinstance(tree, _WRITES):
+        return "write"
+    if isinstance(tree, exp.Command) and str(tree.this).upper() in _WRITE_COMMANDS:
         return "write"
     return "other"
 

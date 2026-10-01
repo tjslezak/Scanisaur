@@ -5,7 +5,7 @@
     {
       "rule": "SCN001",
       "severity": "block",
-      "message": "`_PARTITIONDATE` only exists on ingestion-time partitioned tables, and this query reads none.",
+      "message": "`_PARTITIONDATE` only exists on tables partitioned by ingestion day, and this query reads none.",
       "fix": "Filter on the table's partition column instead.",
       "line": 1,
       "column": 34

@@ -5,8 +5,8 @@
     {
       "rule": "SCN000",
       "severity": "warn",
-      "message": "CALL statements can't be checked.",
-      "fix": "Send one complete SQL query.",
+      "message": "Names in UPDATE statements aren't checked yet.",
+      "fix": "Check the table and column names by hand before running it.",
       "line": null,
       "column": null
     }

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scanisaur.catalog import Catalog, Column, Table
+from scanisaur.catalog import Catalog, Column, Partitioning, Table
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.engine import check as check_module
 from scanisaur.engine.check import Policy, check, new_check_id, tag_for
@@ -71,6 +71,30 @@ class TestCheck:
         assert [f.rule for f in result.findings] == [WRITE_STATEMENT]
         assert result.tables == ()
 
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT 1 FROM events; DROP TABLE events",
+            "DECLARE x INT64; DELETE FROM events WHERE TRUE",
+            "BEGIN; UPDATE users SET country = 'US' WHERE TRUE; COMMIT",
+        ],
+    )
+    def test_writes_blocked_among_several_statements(self, sql: str) -> None:
+        result = check(sql, CATALOG)
+        assert result.verdict is Verdict.BLOCK
+        assert [f.rule for f in result.findings] == [WRITE_STATEMENT, UNANALYZABLE]
+
+    def test_several_statements_warn_when_writes_are_allowed(self) -> None:
+        result = check("SELECT 1; DROP TABLE events", CATALOG, policy=Policy(read_only=False))
+        assert [f.rule for f in result.findings] == [UNANALYZABLE]
+
+    def test_unchecked_writes_are_unanalyzable_when_allowed(self) -> None:
+        sql = "MERGE users u USING events e ON u.user_id = e.user_id WHEN MATCHED THEN DELETE"
+        result = check(sql, CATALOG, policy=Policy(read_only=False))
+        (finding,) = result.findings
+        assert finding.rule == UNANALYZABLE
+        assert finding.message == "Names in MERGE statements aren't checked yet."
+
     def test_writes_checked_when_allowed(self) -> None:
         result = check(
             "INSERT INTO users (user_id) SELECT user_id FROM events",
@@ -89,7 +113,25 @@ class TestCheck:
         (finding,) = result.findings
         assert finding.rule == UNANALYZABLE
         assert finding.message == "Names could not be resolved: boom."
-        assert finding.fix == "Send one complete SQL query."
+        assert finding.fix == "Check the table and column names by hand before running it."
+
+
+class TestCatalogEdges:
+    def test_unparsable_catalog_type_is_unanalyzable(self) -> None:
+        table = Table("p", "d", "t", (Column("a", "INT64"), Column("b", "NOT A TYPE")))
+        result = check("SELECT * FROM t", Catalog((table,), "p", "d"))
+        (finding,) = result.findings
+        assert finding.rule == UNANALYZABLE
+        assert finding.message.startswith("Names could not be resolved:")
+
+    def test_partitiondate_needs_daily_ingestion_partitions(self) -> None:
+        hourly = Table(
+            "p", "d", "t", (Column("a", "INT64"),), partitioning=Partitioning(None, "HOUR")
+        )
+        catalog = Catalog((hourly,), "p", "d")
+        assert check("SELECT a FROM t WHERE _PARTITIONTIME IS NULL", catalog).findings == ()
+        (finding,) = check("SELECT a FROM t WHERE _PARTITIONDATE IS NULL", catalog).findings
+        assert finding.message.startswith("`_PARTITIONDATE` only exists on tables partitioned")
 
 
 class TestDefaults:
@@ -98,7 +140,7 @@ class TestDefaults:
     def test_partial_name_without_defaults(self) -> None:
         result = check("SELECT user_id FROM events", Catalog(tables=(self.TABLE,)))
         (finding,) = result.findings
-        assert finding.fix == "Qualify the table as `project.dataset.table`."
+        assert finding.fix == "Write the table as `project.dataset.table`."
 
     def test_two_part_name_with_default_project(self) -> None:
         catalog = Catalog(tables=(self.TABLE,), default_project="proj")

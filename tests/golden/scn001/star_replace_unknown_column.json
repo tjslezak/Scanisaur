@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`cntry` in `* REPLACE` is not a column of `proj.analytics.users`.",
+      "fix": "Did you mean `country`?",
+      "line": 1,
+      "column": 35
+    }
+  ],
+  "tables": [
+    "proj.analytics.users"
+  ]
+}

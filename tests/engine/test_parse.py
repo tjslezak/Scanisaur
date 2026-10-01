@@ -55,7 +55,22 @@ class TestParse:
         ("EXPORT DATA OPTIONS (uri = 'gs://b/*.csv') AS SELECT 1", "write", "EXPORT DATA"),
         ("BEGIN TRANSACTION", "other", "BEGIN TRANSACTION"),
         ("DECLARE x INT64", "other", "DECLARE"),
-        ("CALL proc()", "other", "CALL"),
+        ("CALL proc()", "write", "CALL"),
+        ("EXECUTE IMMEDIATE 'SELECT 1'", "write", "EXECUTE"),
+        (
+            'REVOKE `roles/bigquery.dataViewer` ON TABLE t FROM "user:a@example.com"',
+            "write",
+            "REVOKE",
+        ),
+        (
+            "LOAD DATA INTO d.t FROM FILES (format = 'CSV', uris = ['gs://b/x.csv'])",
+            "write",
+            "LOAD DATA",
+        ),
+        ("CREATE SNAPSHOT TABLE d.s CLONE d.t", "write", "CREATE"),
+        ("ALTER SCHEMA d SET OPTIONS (description = 'x')", "write", "ALTER"),
+        ("SET x = 1", "other", "SET"),
+        ("EXPLAIN SELECT 1", "other", "EXPLAIN"),
     ],
 )
 def test_classify_and_describe(sql: str, kind: str, name: str) -> None:

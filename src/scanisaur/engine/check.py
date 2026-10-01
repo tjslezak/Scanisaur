@@ -7,11 +7,24 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+from sqlglot import exp
+
 from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.parse import SqlParseError, classify, describe, parse
 from scanisaur.engine.resolve import ResolveError, resolve
 from scanisaur.engine.result import CheckResult, Finding, Severity, verdict_for
 from scanisaur.engine.rules import UNANALYZABLE, WRITE_STATEMENT
+
+#: The SQL dialect checked. Table and column matching follow BigQuery's rules.
+DIALECT = "bigquery"
+
+#: Writes whose names are checked when the policy allows writes: the query they run,
+#: and an INSERT's target. Names in other writes (UPDATE, MERGE, ...) aren't checked yet.
+_CHECKED_WRITES = (exp.Insert, exp.Create, exp.Export)
+
+#: Fixes for SQL that can't be analyzed.
+_SEND_ONE = "Send one complete SQL query."
+_BY_HAND = "Check the table and column names by hand before running it."
 
 #: Crockford base32, lowercase: sortable and unambiguous to read aloud.
 _ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
@@ -34,11 +47,10 @@ def check(
     catalog: Catalog,
     *,
     policy: Policy = DEFAULT_POLICY,
-    dialect: str = "bigquery",
     check_id: str | None = None,
 ) -> CheckResult:
     check_id = check_id or new_check_id()
-    findings, tables = _analyze(sql, catalog, policy, dialect)
+    findings, tables = _analyze(sql, catalog, policy)
     return CheckResult(
         check_id=check_id,
         tag=tag_for(check_id),
@@ -48,48 +60,66 @@ def check(
     )
 
 
-def _analyze(
-    sql: str, catalog: Catalog, policy: Policy, dialect: str
-) -> tuple[list[Finding], tuple[Table, ...]]:
+def _analyze(sql: str, catalog: Catalog, policy: Policy) -> tuple[list[Finding], tuple[Table, ...]]:
     try:
-        statements = parse(sql, dialect)
+        statements = parse(sql, DIALECT)
     except SqlParseError as error:
         message = f"The SQL could not be parsed: {error.message}."
-        return [_unanalyzable(policy, message, error.line, error.column)], ()
+        return [
+            _unanalyzable(policy, message, "Fix the syntax error.", error.line, error.column)
+        ], ()
     if not statements:
-        return [_unanalyzable(policy, "There is no SQL statement to check.")], ()
+        return [_unanalyzable(policy, "There is no SQL statement to check.", _SEND_ONE)], ()
+
+    # Writes are blocked wherever they are, even next to statements that can't be checked.
+    findings = _writes_blocked(statements) if policy.read_only else []
     if len(statements) > 1:
         message = f"Found {len(statements)} statements; send one statement per check."
-        return [_unanalyzable(policy, message)], ()
+        fix = "Check each statement on its own."
+        return [*findings, _unanalyzable(policy, message, fix)], ()
+    if findings:
+        return findings, ()
 
     (tree,) = statements
     kind = classify(tree)
     if kind == "other":
-        return [_unanalyzable(policy, f"{describe(tree)} statements can't be checked.")], ()
-    if kind == "write" and policy.read_only:
-        finding = Finding(
-            rule=WRITE_STATEMENT,
-            severity=Severity.BLOCK,
-            message=f"{describe(tree)} statements can change data, schema or access, "
-            "and this policy is read-only.",
-            fix="Run a read-only SELECT instead.",
-        )
-        return [finding], ()
+        message = f"{describe(tree)} statements can't be checked."
+        return [_unanalyzable(policy, message, _SEND_ONE)], ()
+    if kind == "write" and not isinstance(tree, _CHECKED_WRITES):
+        message = f"Names in {describe(tree)} statements aren't checked yet."
+        return [_unanalyzable(policy, message, _BY_HAND)], ()
     try:
-        resolution = resolve(tree, catalog, dialect)
+        # EXPORT DATA names its tables and columns in the query it exports.
+        resolution = resolve(tree.this if isinstance(tree, exp.Export) else tree, catalog, DIALECT)
     except ResolveError as error:
-        return [_unanalyzable(policy, f"Names could not be resolved: {error}.")], ()
+        message = f"Names could not be resolved: {error}."
+        return [_unanalyzable(policy, message, _BY_HAND)], ()
     return list(resolution.findings), resolution.tables
 
 
+def _writes_blocked(statements: list[exp.Expr]) -> list[Finding]:
+    """One SCN002 finding per kind of write statement."""
+    names = dict.fromkeys(describe(tree) for tree in statements if classify(tree) == "write")
+    return [
+        Finding(
+            rule=WRITE_STATEMENT,
+            severity=Severity.BLOCK,
+            message=f"{name} statements can change data, schema or access, "
+            "and this policy is read-only.",
+            fix="Run a read-only SELECT instead.",
+        )
+        for name in names
+    ]
+
+
 def _unanalyzable(
-    policy: Policy, message: str, line: int | None = None, column: int | None = None
+    policy: Policy, message: str, fix: str, line: int | None = None, column: int | None = None
 ) -> Finding:
     return Finding(
         rule=UNANALYZABLE,
         severity=Severity.BLOCK if policy.fail_mode == "closed" else Severity.WARN,
         message=message,
-        fix="Send one complete SQL query." if line is None else "Fix the syntax error.",
+        fix=fix,
         line=line,
         column=column,
     )

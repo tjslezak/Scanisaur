@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`zz._PARTITIONTIME` uses `zz`, which isn't a table or alias in this query.",
+      "fix": "Use one of: `i`.",
+      "line": 3,
+      "column": 10
+    }
+  ],
+  "tables": [
+    "proj.raw.ingest"
+  ]
+}
