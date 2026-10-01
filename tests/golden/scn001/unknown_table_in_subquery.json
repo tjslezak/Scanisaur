@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `customers` does not exist.",
+      "fix": "Did you mean `users`?",
+      "line": 3,
+      "column": 39
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

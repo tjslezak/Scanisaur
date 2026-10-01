@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `nope` does not exist in this query.",
+      "fix": "List the columns with scanisaur_schema_describe.",
+      "line": 1,
+      "column": 8
+    }
+  ],
+  "tables": []
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`ev.user_id` uses `ev`, which isn't a table or alias in this query.",
+      "fix": "Did you mean `e`?",
+      "line": 1,
+      "column": 11
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

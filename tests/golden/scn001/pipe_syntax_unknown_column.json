@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `evnt_date` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `event_date`?",
+      "line": 2,
+      "column": 10
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

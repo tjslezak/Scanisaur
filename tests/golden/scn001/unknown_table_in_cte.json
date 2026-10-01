@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `sessions` does not exist.",
+      "fix": "Find the table with scanisaur_schema_search.",
+      "line": 2,
+      "column": 23
+    }
+  ],
+  "tables": []
+}

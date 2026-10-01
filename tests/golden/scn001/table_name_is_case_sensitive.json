@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `orders` does not exist.",
+      "fix": "Did you mean `Orders`?",
+      "line": 1,
+      "column": 30
+    }
+  ],
+  "tables": []
+}

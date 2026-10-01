@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "Found 2 statements; send one statement per check.",
+      "fix": "Send one complete SQL query.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": []
+}

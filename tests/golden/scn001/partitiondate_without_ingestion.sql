@@ -1,0 +1,1 @@
+SELECT user_id FROM events WHERE _PARTITIONDATE = '2026-09-01'

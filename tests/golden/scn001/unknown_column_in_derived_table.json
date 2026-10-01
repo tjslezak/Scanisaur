@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `t.signup` does not exist in `t`.",
+      "fix": "Columns of `t`: `user_id`, `country`.",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.users"
+  ]
+}

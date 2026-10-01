@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `userid` does not exist in `proj.analytics.users`.",
+      "fix": "Did you mean `user_id`?",
+      "line": 3,
+      "column": 8
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users"
+  ]
+}

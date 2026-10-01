@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `device_type` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `device`?",
+      "line": 4,
+      "column": 10
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

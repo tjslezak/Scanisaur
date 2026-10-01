@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`USING (id)` needs `id` on both sides of the join.",
+      "fix": "Did you mean `user_id`?",
+      "line": 3,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users"
+  ]
+}

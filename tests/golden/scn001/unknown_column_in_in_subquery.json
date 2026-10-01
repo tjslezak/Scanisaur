@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `contry` does not exist in `proj.analytics.users`.",
+      "fix": "Did you mean `country`?",
+      "line": 3,
+      "column": 51
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users"
+  ]
+}

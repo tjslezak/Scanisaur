@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `event_log` does not exist.",
+      "fix": "Did you mean `events`?",
+      "line": 3,
+      "column": 21
+    }
+  ],
+  "tables": []
+}

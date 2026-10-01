@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "DECLARE statements can't be checked.",
+      "fix": "Send one complete SQL query.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": []
+}

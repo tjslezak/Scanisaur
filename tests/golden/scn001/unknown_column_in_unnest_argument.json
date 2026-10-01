@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `e.paramz` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `e.params`?",
+      "line": 2,
+      "column": 25
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

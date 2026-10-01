@@ -1,0 +1,1 @@
+SELECT user_id FROM events WHERE _TABLE_SUFFIX = '20260901'

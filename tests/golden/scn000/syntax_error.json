@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "The SQL could not be parsed: Expected table name but got 'WHERE'.",
+      "fix": "Fix the syntax error.",
+      "line": 2,
+      "column": 6
+    }
+  ],
+  "tables": []
+}

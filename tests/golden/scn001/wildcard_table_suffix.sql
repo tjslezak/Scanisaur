@@ -1,0 +1,4 @@
+SELECT event_name, COUNT(*) AS n
+FROM `proj.ga4.events_*`
+WHERE _TABLE_SUFFIX BETWEEN '20260901' AND '20260907'
+GROUP BY event_name

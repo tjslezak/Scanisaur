@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `plan` does not exist in the subquery.",
+      "fix": "Columns of the subquery: `user_id`.",
+      "line": 3,
+      "column": 7
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

@@ -1,0 +1,45 @@
+# Catalog shared by the golden cases. Changing it changes many expected outputs.
+default_project: proj
+default_dataset: analytics
+tables:
+  - name: proj.analytics.events
+    rows: 1200000000
+    bytes: 2100000000000
+    partitioning: {column: event_date, granularity: DAY}
+    clustering: [user_id]
+    columns:
+      event_date: DATE
+      event_ts: TIMESTAMP
+      user_id: STRING
+      event_name: STRING
+      params: ARRAY<STRUCT<key STRING, value STRING>>
+      device: STRUCT<category STRING, os STRING>
+  - name: proj.analytics.users
+    rows: 5000000
+    bytes: 900000000
+    columns:
+      user_id: STRING
+      country: STRING
+      signup_date: DATE
+  - name: proj.analytics.Orders
+    rows: 80000000
+    bytes: 12000000000
+    partitioning: {column: order_date, granularity: DAY, required: true}
+    columns:
+      order_id: STRING
+      user_id: STRING
+      amount: NUMERIC
+      order_date: DATE
+  - name: proj.ga4.events_*
+    rows: 900000000
+    bytes: 750000000000
+    columns:
+      event_name: STRING
+      user_pseudo_id: STRING
+      event_timestamp: INT64
+  - name: proj.raw.ingest
+    rows: 40000000
+    bytes: 60000000000
+    partitioning: {granularity: DAY}
+    columns:
+      payload: STRING
