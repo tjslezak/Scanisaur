@@ -1,0 +1,53 @@
+name: False positive or wrong finding
+description: Scanisaur flagged a query that was fine, missed a real problem, or estimated cost badly.
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports are the main way the rules get better. Please remove literal values, and rename tables and columns if they are sensitive, before posting.
+  - type: input
+    id: rule
+    attributes:
+      label: Rule ID
+      description: For example SCN003. Leave blank for a cost-estimate problem.
+  - type: textarea
+    id: sql
+    attributes:
+      label: SQL that was checked
+      render: sql
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What Scanisaur returned
+      description: The `scanisaur_check_sql` response or `scanisaur check` output.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: why-wrong
+    attributes:
+      label: Why is this wrong?
+      description: For cost estimates, include the actual bytes billed or the dry-run bytes if you have them.
+    validations:
+      required: true
+  - type: textarea
+    id: metadata
+    attributes:
+      label: Relevant table metadata
+      description: Partitioning, clustering, row counts, sizes, keys.
+  - type: input
+    id: version
+    attributes:
+      label: Scanisaur version
+    validations:
+      required: true
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Redaction
+      options:
+        - label: I removed sensitive literal values, names and identifiers.
+          required: true

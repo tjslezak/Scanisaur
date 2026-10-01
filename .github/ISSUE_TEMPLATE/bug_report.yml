@@ -1,0 +1,37 @@
+name: Bug report
+description: Something crashed, errored, or behaved differently from the docs.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the full error message or traceback if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands you ran and any SQL involved. Remove sensitive names and values first.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Scanisaur version
+      description: Output of `scanisaur --version`.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Warehouse, operating system, Python version, MCP client.

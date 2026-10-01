@@ -1,0 +1,40 @@
+name: Rule proposal
+description: Suggest a new pattern Scanisaur should catch before a query runs.
+labels: ["rule-proposal"]
+body:
+  - type: textarea
+    id: pattern
+    attributes:
+      label: Pattern
+      description: What does the costly or incorrect query do?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example SQL
+      render: sql
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Why it matters
+      description: Extra bytes scanned, wrong results, failed queries, or something else.
+    validations:
+      required: true
+  - type: textarea
+    id: detection
+    attributes:
+      label: How to detect it from metadata
+      description: Which catalog facts (partitioning, clustering, keys, sizes) are needed, without reading table data.
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested fix
+      description: What should the agent change?
+  - type: input
+    id: warehouses
+    attributes:
+      label: Warehouses
+      description: For example BigQuery, Snowflake, or all.
