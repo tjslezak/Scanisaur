@@ -2,6 +2,8 @@
 
 Thanks for helping. Scanisaur is in early development, so expect things to move.
 
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Development setup
 
 You need [uv](https://docs.astral.sh/uv/). It installs the right Python and all dependencies.
