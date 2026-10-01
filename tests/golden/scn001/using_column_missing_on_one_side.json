@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`USING (event_name)` needs `event_name` on both sides of the join.",
+      "fix": "Only `proj.analytics.events` has `event_name`; join with ON on the matching columns.",
+      "line": 3,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users"
+  ]
+}

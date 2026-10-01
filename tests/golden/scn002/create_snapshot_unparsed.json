@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN002",
+      "severity": "block",
+      "message": "CREATE statements can change data, schema or access, and this policy is read-only.",
+      "fix": "Run a read-only SELECT instead.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": []
+}

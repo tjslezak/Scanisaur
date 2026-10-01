@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `e.event_nam` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `e.event_name`?",
+      "line": 1,
+      "column": 10
+    },
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `u.countri` does not exist in `proj.analytics.users`.",
+      "fix": "Did you mean `u.country`?",
+      "line": 1,
+      "column": 23
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users"
+  ]
+}

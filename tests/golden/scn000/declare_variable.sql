@@ -1,0 +1,1 @@
+DECLARE report_date DATE DEFAULT CURRENT_DATE();

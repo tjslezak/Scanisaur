@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`_TABLE_SUFFIX` is ambiguous: it exists on `a`, `b`.",
+      "fix": "Qualify it, for example `a._TABLE_SUFFIX`.",
+      "line": 4,
+      "column": 7
+    }
+  ],
+  "tables": [
+    "proj.ga4.events_*"
+  ]
+}

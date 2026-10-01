@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`e._TABLE_SUFFIX` does not exist: `_TABLE_SUFFIX` is only on wildcard tables such as `events_*`.",
+      "fix": "Query the wildcard table, or remove the filter.",
+      "line": 3,
+      "column": 9
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

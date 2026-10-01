@@ -1,0 +1,1 @@
+SELECT USER_ID, Event_Name FROM events WHERE EVENT_DATE = '2026-09-01'

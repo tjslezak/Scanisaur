@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "There is no SQL statement to check.",
+      "fix": "Send one complete SQL query.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": []
+}

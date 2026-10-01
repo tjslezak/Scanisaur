@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`evnt_name` in `* EXCEPT` is not a column of `base`.",
+      "fix": "Did you mean `event_name`?",
+      "line": 2,
+      "column": 18
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN002",
+      "severity": "block",
+      "message": "DROP TABLE statements can change data, schema or access, and this policy is read-only.",
+      "fix": "Run a read-only SELECT instead.",
+      "line": null,
+      "column": null
+    },
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "Found 2 statements; send one statement per check.",
+      "fix": "Check each statement on its own.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": []
+}

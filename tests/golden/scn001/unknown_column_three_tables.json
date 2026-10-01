@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `plan` does not exist in `proj.analytics.events`, `proj.analytics.users` or `proj.analytics.Orders`.",
+      "fix": "List the columns with scanisaur_schema_describe.",
+      "line": 1,
+      "column": 8
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users",
+    "proj.analytics.Orders"
+  ]
+}

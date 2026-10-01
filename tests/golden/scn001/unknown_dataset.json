@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `proj.analytcs.events` does not exist.",
+      "fix": "Did you mean `proj.analytics.events`?",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": []
+}

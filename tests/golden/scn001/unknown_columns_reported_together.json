@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `usr_id` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `user_id`?",
+      "line": 1,
+      "column": 8
+    },
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `evnt_name` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `event_name`?",
+      "line": 1,
+      "column": 16
+    },
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `event_dt` does not exist in `proj.analytics.events`.",
+      "fix": "Did you mean `event_date` or `event_ts`?",
+      "line": 3,
+      "column": 7
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

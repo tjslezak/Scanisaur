@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `amout` does not exist in `proj.analytics.Orders`.",
+      "fix": "Did you mean `amount`?",
+      "line": 1,
+      "column": 18
+    }
+  ],
+  "tables": [
+    "proj.analytics.Orders"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "Names in UPDATE statements aren't checked yet.",
+      "fix": "Check the table and column names by hand before running it.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": []
+}
