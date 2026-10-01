@@ -24,7 +24,10 @@ classifiers = [
   "Topic :: Database",
   "Typing :: Typed",
 ]
-dependencies = ["typer>=0.15"]
+dependencies = [
+    "sqlglot>=30.21",
+    "typer>=0.15",
+]
 
 [project.urls]
 Homepage = "https://github.com/tjslezak/Scanisaur"
