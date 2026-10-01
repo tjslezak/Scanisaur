@@ -25,7 +25,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-    "sqlglot>=30.21",
+    "sqlglot>=30.21,<31",
     "typer>=0.15",
 ]
 

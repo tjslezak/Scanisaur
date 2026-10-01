@@ -16,10 +16,12 @@ SCHEMA: dict[str, object] = {
                 "event_name": "STRING",
                 "params": "ARRAY<STRUCT<key STRING, value STRING>>",
                 "device": "STRUCT<category STRING, os STRING>",
+                "tags": "ARRAY<STRING>",
             },
             "users": {"user_id": "STRING", "country": "STRING", "signup_date": "DATE"},
             "events_archive": {"event_date": "DATE", "user_id": "STRING"},
             "raw_logs": {"payload": "STRING"},
+            "plans": {"plan_id": "STRING", "valid_from": "DATE", "valid_to": "DATE"},
         },
         "ga4": {"events_*": {"event_name": "STRING", "user_pseudo_id": "STRING"}},
     }
@@ -314,3 +316,93 @@ def test_non_query_is_rejected() -> None:
 def test_comparison_shapes(sql: str, op: str) -> None:
     facts = facts_for(f"SELECT user_id FROM `proj.analytics.events` {sql}")
     assert only_predicate(table(facts, "events")).op == op
+
+
+# Regressions from the PR #5 review.
+
+
+@pytest.mark.parametrize(
+    ("condition", "column"),
+    [
+        ("CURRENT_DATE() BETWEEN valid_from AND valid_to", "valid_from"),
+        ("'2026-09-01' IN (valid_from, valid_to)", "valid_from"),
+        ("valid_from < valid_to", "valid_from"),
+    ],
+)
+def test_conditions_without_a_single_column_side_are_other(condition: str, column: str) -> None:
+    facts = facts_for(f"SELECT plan_id FROM `proj.analytics.plans` WHERE {condition}")
+    predicate = only_predicate(table(facts, "plans"))
+    assert (predicate.column, predicate.op, predicate.constant) == (column, "other", False)
+
+
+def test_constant_in_unnest_of_column_is_other() -> None:
+    facts = facts_for("SELECT e.user_id FROM `proj.analytics.events` e WHERE 'x' IN UNNEST(e.tags)")
+    predicate = only_predicate(table(facts, "e"))
+    assert (predicate.column, predicate.op) == ("tags", "other")
+
+
+def test_in_unnest_of_constant_array_is_constant() -> None:
+    facts = facts_for(
+        "SELECT user_id FROM `proj.analytics.events` "
+        "WHERE event_date IN UNNEST(['2026-09-01', '2026-09-02'])"
+    )
+    predicate = only_predicate(table(facts, "events"))
+    assert (predicate.op, predicate.constant) == ("in", True)
+    assert predicate.values == ("'2026-09-01'", "'2026-09-02'")
+
+
+@pytest.mark.parametrize(
+    ("condition", "column"),
+    [
+        ("(event_date) = '2026-09-01'", "event_date"),
+        ("e.device.category = 'mobile'", "device"),
+    ],
+)
+def test_parentheses_and_struct_fields_are_not_wrappers(condition: str, column: str) -> None:
+    facts = facts_for(f"SELECT e.user_id FROM `proj.analytics.events` e WHERE {condition}")
+    predicate = only_predicate(table(facts, "e"))
+    assert (predicate.column, predicate.wrapper) == (column, None)
+
+
+@pytest.mark.parametrize("condition", ["TRUE", "1 = 1", "u.country = 'US'"])
+def test_on_clause_that_does_not_link_tables_is_no_condition(condition: str) -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM `proj.analytics.events` e "
+        f"JOIN `proj.analytics.users` u ON {condition}"
+    )
+    (join,) = facts.joins
+    assert not join.has_condition
+
+
+def test_non_equi_join_condition_counts() -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM `proj.analytics.events` e JOIN `proj.analytics.plans` p "
+        "ON e.event_date BETWEEN p.valid_from AND p.valid_to"
+    )
+    (join,) = facts.joins
+    assert join.has_condition
+    assert join.keys == ()
+
+
+def test_aggregate_in_scalar_subquery_does_not_aggregate_outer_query() -> None:
+    facts = facts_for(
+        "SELECT (SELECT MAX(signup_date) FROM `proj.analytics.users`) AS latest, user_id "
+        "FROM `proj.analytics.events`"
+    )
+    assert not facts.outer_aggregated
+
+
+@pytest.mark.parametrize(
+    ("second_branch", "aggregated"),
+    [
+        ("SELECT COUNT(*) AS n FROM `proj.analytics.events_archive`", True),
+        ("SELECT 1 AS n FROM `proj.analytics.events_archive`", False),
+    ],
+)
+def test_set_operation_is_aggregated_only_when_every_branch_is(
+    second_branch: str, aggregated: bool
+) -> None:
+    facts = facts_for(
+        f"SELECT COUNT(*) AS n FROM `proj.analytics.events` UNION ALL {second_branch}"
+    )
+    assert facts.outer_aggregated is aggregated

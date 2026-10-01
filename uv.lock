@@ -683,7 +683,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "sqlglot", specifier = ">=30.21" },
+    { name = "sqlglot", specifier = ">=30.21,<31" },
     { name = "typer", specifier = ">=0.15" },
 ]
 

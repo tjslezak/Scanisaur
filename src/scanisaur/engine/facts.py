@@ -13,10 +13,16 @@ from dataclasses import dataclass
 from typing import Literal
 
 from sqlglot import exp
-from sqlglot.optimizer.scope import Scope, traverse_scope
+from sqlglot.optimizer.scope import Scope, find_all_in_scope, traverse_scope
 
 #: BigQuery pseudo-columns that sqlglot leaves unqualified.
 PSEUDO_COLUMNS = frozenset({"_table_suffix", "_partitiontime", "_partitiondate"})
+
+# sqlglot renames node arguments between major versions. Fail at import rather than
+# silently treating every ``SELECT * EXCEPT (...)`` as reading all columns.
+_STAR_EXCEPT_ARG = "except_"
+if _STAR_EXCEPT_ARG not in exp.Star.arg_types:  # pragma: no cover
+    raise ImportError(f"unsupported sqlglot version: exp.Star has no {_STAR_EXCEPT_ARG!r}")
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
 Clause = Literal["where", "on", "qualify"]
@@ -186,7 +192,7 @@ def _starred_aliases(scope: Scope, sources: dict[str, exp.Table]) -> dict[str, f
 
 
 def _star_except(star: exp.Star) -> frozenset[str]:
-    return frozenset(column.name.lower() for column in star.args.get("except_") or [])
+    return frozenset(column.name.lower() for column in star.args.get(_STAR_EXCEPT_ARG) or [])
 
 
 def _conjuncts(condition: exp.Expr | None) -> Iterator[exp.Expr]:
@@ -232,6 +238,9 @@ def _is_constant(node: exp.Expr) -> bool:
 
 
 def _wrapper(side: exp.Expr) -> str | None:
+    """The function around a column, ignoring parentheses and struct field access."""
+    while isinstance(side, exp.Paren | exp.Dot):
+        side = side.this
     if isinstance(side, exp.Column):
         return None
     if isinstance(side, exp.Func):
@@ -258,12 +267,19 @@ def _predicates(
 def _classify(condition: exp.Expr, clause: Clause, dialect: str) -> Predicate | None:
     sql = condition.sql(dialect=dialect)
 
-    def make(side: exp.Expr, op: ComparisonOp, others: list[exp.Expr]) -> Predicate:
-        column = side if isinstance(side, exp.Column) else side.find(exp.Column)
-        assert column is not None
-        constant = bool(others) and all(_is_constant(other) for other in others)
-        values = tuple(other.sql(dialect=dialect) for other in others) if constant else ()
-        return Predicate(column.name.lower(), op, values, constant, _wrapper(side), clause, sql)
+    def other() -> Predicate | None:
+        columns = _local_columns(condition)
+        if not columns:
+            return None
+        return Predicate(columns[0].name.lower(), "other", (), False, None, clause, sql)
+
+    def make(side: exp.Expr, op: ComparisonOp, others: list[exp.Expr]) -> Predicate | None:
+        columns = _local_columns(side)
+        if not columns:  # e.g. CURRENT_DATE() BETWEEN valid_from AND valid_to
+            return other()
+        constant = bool(others) and all(_is_constant(value) for value in others)
+        values = tuple(value.sql(dialect=dialect) for value in others) if constant else ()
+        return Predicate(columns[0].name.lower(), op, values, constant, _wrapper(side), clause, sql)
 
     comparison = _COMPARISONS.get(type(condition))
     if comparison is not None and isinstance(condition, exp.Binary):
@@ -272,22 +288,31 @@ def _classify(condition: exp.Expr, clause: Clause, dialect: str) -> Predicate | 
             return make(left, comparison, [right])
         if _local_columns(right) and not _local_columns(left):
             return make(right, _FLIPPED.get(comparison, comparison), [left])
-        return None
+        return other()
     if isinstance(condition, exp.Between):
         return make(condition.this, "between", [condition.args["low"], condition.args["high"]])
     if isinstance(condition, exp.In):
-        if condition.args.get("query") is not None:
-            return make(condition.this, "in", [condition.args["query"]])
-        return make(condition.this, "in", list(condition.expressions))
+        return make(condition.this, "in", _in_values(condition))
     if isinstance(condition, exp.Or):
         disjunction = _equality_disjunction(condition)
         if disjunction is not None:
             side, values = disjunction
             return make(side, "in", values)
-    column = condition.find(exp.Column)
-    if column is None:
-        return None
-    return Predicate(column.name.lower(), "other", (), False, None, clause, sql)
+    return other()
+
+
+def _in_values(condition: exp.In) -> list[exp.Expr]:
+    """The right-hand side of IN: a list, a subquery, or UNNEST of an array."""
+    query = condition.args.get("query")
+    if query is not None:
+        return [query]
+    unnest = condition.args.get("unnest")
+    if unnest is not None:
+        arrays = unnest.expressions
+        if len(arrays) == 1 and isinstance(arrays[0], exp.Array):
+            return list(arrays[0].expressions)
+        return list(arrays)
+    return list(condition.expressions)
 
 
 def _disjuncts(condition: exp.Expr) -> Iterator[exp.Expr]:
@@ -337,8 +362,9 @@ def _joins(scope: Scope) -> Iterator[Join]:
             kind = "table"
         else:
             kind = "derived"
+        on_conjuncts = list(_conjuncts(join.args.get("on")))
         keys = [
-            *_equality_keys(_conjuncts(join.args.get("on")), alias),
+            *_equality_keys(on_conjuncts, alias),
             *_equality_keys(where_conjuncts, alias),
         ]
         yield Join(
@@ -346,9 +372,16 @@ def _joins(scope: Scope) -> Iterator[Join]:
             target_kind=kind,
             side=join.side or None,
             kind=join.kind or None,
-            has_condition=join.args.get("on") is not None or bool(keys),
+            # ON TRUE, ON 1 = 1 or a filter on one side alone doesn't connect the tables.
+            has_condition=bool(keys) or any(_links(c, alias) for c in on_conjuncts),
             keys=tuple(keys),
         )
+
+
+def _links(condition: exp.Expr, alias: str) -> bool:
+    """True when a condition relates the join target to some other source."""
+    owners = {column.table for column in _local_columns(condition)}
+    return alias in owners and len(owners) > 1
 
 
 def _equality_keys(
@@ -390,11 +423,22 @@ def _outer_shape(expression: exp.Expr) -> tuple[int | None, bool]:
         value = limit_node.expression
         if isinstance(value, exp.Literal) and value.is_int:
             limit = int(value.this)
+    return limit, _aggregated(expression)
+
+
+def _aggregated(expression: exp.Expr) -> bool:
+    """True when the query returns one row per group rather than one per input row."""
+    if isinstance(expression, exp.Subquery):
+        return _aggregated(expression.this)
+    if isinstance(expression, exp.SetOperation):
+        return _aggregated(expression.left) and _aggregated(expression.right)
     if not isinstance(expression, exp.Select):
-        return limit, False
-    aggregated = bool(expression.args.get("group")) or any(
+        return False
+    if expression.args.get("group"):
+        return True
+    # Aggregates inside scalar subqueries or window functions don't collapse the rows.
+    return any(
         aggregate.find_ancestor(exp.Window) is None
         for projection in expression.expressions
-        for aggregate in projection.find_all(exp.AggFunc)
+        for aggregate in find_all_in_scope(projection, exp.AggFunc)
     )
-    return limit, aggregated
