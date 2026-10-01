@@ -5,6 +5,7 @@ repos:
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
+      - id: detect-private-key
       - id: end-of-file-fixer
       - id: trailing-whitespace
   # ruff and mypy run from the project environment, so uv.lock is the only place

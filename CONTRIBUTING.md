@@ -26,7 +26,24 @@ uv run mypy
 uv run pytest --cov
 ```
 
-`pre-commit` runs ruff and mypy on each commit.
+`pre-commit` runs ruff, mypy and a private-key check on each commit.
+
+## Credentials
+
+Never put credentials in the repository. To work against BigQuery from your machine, impersonate a service account with your own Google login instead of downloading a key:
+
+```bash
+gcloud auth application-default login \
+  --impersonate-service-account=SERVICE_ACCOUNT_EMAIL
+```
+
+If you must keep a key file, store it outside the repository (for example under `~/.config/`) and readable only by you. Three checks catch mistakes:
+
+- `.gitignore` skips common key file names.
+- The `detect-private-key` pre-commit hook, which CI also runs, rejects any file that contains a private key.
+- GitHub push protection blocks pushes that contain known credential formats.
+
+If a key is ever committed, delete it in Google Cloud first. Rewriting Git history doesn't make it secret again.
 
 ## Pull requests
 
