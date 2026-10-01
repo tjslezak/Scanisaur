@@ -8,6 +8,20 @@ dist/
 # Environments
 .venv/
 .env
+.env.*
+!.env.example
+
+# Credentials. Keys belong outside the repository (see CONTRIBUTING.md); these
+# patterns only catch mistakes.
+*.pem
+*.p12
+*.pfx
+*-key.json
+*_key.json
+*credentials*.json
+*service-account*.json
+*service_account*.json
+scanisaur-*.json
 
 # Tool caches and reports
 .coverage
