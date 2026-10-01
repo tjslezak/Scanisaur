@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Scanisaur logo draft 06: Fang Lens">
+  <title>Scanisaur logo draft 06: Fang Lens</title>
+  <defs><clipPath id="fang-lens"><circle cx="214" cy="214" r="120"/></clipPath></defs>
+  <line x1="316.3" y1="316.3" x2="436" y2="436" stroke="#23A866" stroke-width="66" stroke-linecap="round"/>
+  <circle cx="214" cy="214" r="138.0" fill="#0E2A1F" stroke="#23A866" stroke-width="36"/>
+  <g fill="#F4EFE3" clip-path="url(#fang-lens)">
+    <polygon points="123,101.1 153,101.1 138,167.1"/>
+    <polygon points="161,80.2 191,80.2 176,130.2"/>
+    <polygon points="199,74 229,74 214,124"/>
+    <polygon points="237,80.2 267,80.2 252,130.2"/>
+    <polygon points="275,101.1 305,101.1 290,167.1"/>
+    <polygon points="143,339.6 171,339.6 157,281.6"/>
+    <polygon points="181,352.5 209,352.5 195,308.5"/>
+    <polygon points="219,352.5 247,352.5 233,308.5"/>
+    <polygon points="257,339.6 285,339.6 271,281.6"/>
+  </g>
+  <rect x="120" y="208" width="188" height="12" rx="6" fill="#FFB020"/>
+</svg>

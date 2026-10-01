@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanisaur Logo Drafts</title>
+<style>
+  :root {
+    --deep: #0E2A1F;
+    --green: #23A866;
+    --amber: #FFB020;
+    --ink: #0E2A1F;
+    --muted: #5B6B63;
+    --card: #FFFFFF;
+    --page: #F3F1EA;
+    --line: #E2DED2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 32px 48px;
+    background: var(--page);
+    color: var(--ink);
+    font-family: Inter, "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  }
+  header { max-width: 1200px; margin: 0 auto 28px; }
+  h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); font-size: 15px; }
+  .grid {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .hero { display: flex; justify-content: center; padding: 8px 0; }
+  .hero img { width: 200px; height: 200px; }
+  .sizes {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--page);
+  }
+  .sizes.dark { background: var(--deep); }
+  .lockup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0 2px;
+    border-top: 1px solid var(--line);
+  }
+  .lockup img { width: 44px; height: 44px; }
+  .word { font-size: 28px; font-weight: 800; letter-spacing: -0.03em; }
+  .word span { color: var(--green); }
+  h2 { margin: 0; font-size: 17px; }
+  h2 small { color: var(--muted); font-weight: 600; margin-right: 6px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+  .row { display: flex; gap: 10px; }
+  .row .sizes { flex: 1; }
+  @media (max-width: 960px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) {
+    body { padding: 24px 16px; }
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scanisaur logo drafts</h1>
+  <p>Six directions for the apex predator of agent-generated SQL. Each mark is shown large, at 64/32/16&nbsp;px on light and dark backgrounds, and next to the wordmark.</p>
+</header>
+<main class="grid" id="grid"></main>
+<script>
+  const drafts = [
+    ["01-rex-reticle", "Rex Reticle",
+     "Angular T-rex head in an app tile. Its eye is a scanner crosshair, so the predator is always looking at your queries."],
+    ["02-chomp-db", "Chomp DB",
+     "The classic database cylinder with its lid open as a toothy jaw. Playful, and it reads as SQL immediately."],
+    ["03-stego-stack", "Stego Stack",
+     "A database stack with stegosaurus back plates, cut by an amber scan line. Reads as database first, dinosaur second."],
+    ["04-spiked-s", "Spiked S",
+     "An S monogram that tapers like a tail, with spikes along its back. Works as a compact favicon or avatar."],
+    ["05-scanned-track", "Scanned Track",
+     "A three-toed footprint in a viewfinder. Everything above the scan line has been checked; the rest is next."],
+    ["06-fang-lens", "Fang Lens",
+     "A magnifying glass whose lens is a set of jaws, with a scan beam between the teeth. Simple and very readable."],
+  ];
+  const grid = document.getElementById("grid");
+  for (const [file, name, blurb] of drafts) {
+    const src = `${file}.svg`;
+    const sizes = [64, 32, 16].map(s => `<img src="${src}" width="${s}" height="${s}" alt="">`).join("");
+    grid.insertAdjacentHTML("beforeend", `
+      <article class="card">
+        <div class="hero"><img src="${src}" alt="${name} logo draft"></div>
+        <div class="row">
+          <div class="sizes">${sizes}</div>
+          <div class="sizes dark">${sizes}</div>
+        </div>
+        <div class="lockup"><img src="${src}" alt=""><div class="word">Scan<span>isaur</span></div></div>
+        <h2><small>${file.slice(0, 2)}</small>${name}</h2>
+        <p>${blurb}</p>
+      </article>`);
+  }
+</script>
+</body>
+</html>

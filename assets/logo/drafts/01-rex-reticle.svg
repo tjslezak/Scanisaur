@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Scanisaur logo draft 01: Rex Reticle">
+  <title>Scanisaur logo draft 01: Rex Reticle</title>
+  <defs>
+    <clipPath id="rex-tile"><rect width="512" height="512" rx="112"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0E2A1F"/>
+  <g clip-path="url(#rex-tile)">
+    <line x1="0" y1="200" x2="512" y2="200" stroke="#FFB020" stroke-width="4" opacity=".35"/>
+    <polygon points="120,560 110,330 140,214 206,154 310,126 416,138 464,170 468,232 290,264 448,294 442,336 330,366 262,384 296,560" fill="#23A866"/>
+    <polygon points="252,164 366,148 352,166 258,178" fill="#0E2A1F" opacity=".3"/>
+    <polygon points="434,166 452,172 440,180" fill="#0E2A1F"/>
+  </g>
+  <g fill="#F4EFE3">
+    <polygon points="460,227.3 438.3,231.2 453.7,254.9"/>
+    <polygon points="423.4,233.9 403.7,237.5 417.6,258.3"/>
+    <polygon points="386.8,240.5 369.1,243.7 381.1,259.8"/>
+    <polygon points="414.9,293.8 434.6,297.6 429.2,272.1"/>
+    <polygon points="381.2,287.4 398.8,290.8 393.7,269.4"/>
+    <polygon points="347.4,281 363.1,284 358.2,266.8"/>
+  </g>
+  <g stroke="#FFB020" stroke-width="7" stroke-linecap="round" fill="none">
+    <circle cx="318" cy="200" r="21" fill="#0E2A1F"/>
+    <line x1="318" y1="162" x2="318" y2="173"/>
+    <line x1="318" y1="227" x2="318" y2="238"/>
+    <line x1="280" y1="200" x2="291" y2="200"/>
+    <line x1="345" y1="200" x2="356" y2="200"/>
+  </g>
+  <circle cx="318" cy="200" r="6" fill="#FFB020"/>
+</svg>

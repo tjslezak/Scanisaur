@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Scanisaur logo draft 02: Chomp DB">
+  <title>Scanisaur logo draft 02: Chomp DB</title>
+  <ellipse cx="256" cy="262" rx="150" ry="42" fill="#0E2A1F"/>
+  <path d="M106,262 L106,430 A150,42 0 0 0 406,430 L406,262 A150,42 0 0 1 106,262 Z" fill="#23A866"/>
+  <clipPath id="chomp-body"><path d="M106,262 L106,430 A150,42 0 0 0 406,430 L406,262 A150,42 0 0 1 106,262 Z"/></clipPath>
+  <g fill="none" stroke="#0E2A1F" stroke-width="9" opacity=".5" clip-path="url(#chomp-body)">
+    <path d="M106,318 A150,42 0 0 0 406,318"/>
+    <path d="M106,374 A150,42 0 0 0 406,374"/>
+  </g>
+  <g fill="#F4EFE3">
+    <polygon points="379.3,279 403.3,279 391.3,253"/>
+    <polygon points="354.3,290.4 378.3,290.4 366.3,264.4"/>
+    <polygon points="316,298.9 340,298.9 328,272.9"/>
+    <polygon points="269,303.4 293,303.4 281,277.4"/>
+    <polygon points="219,303.4 243,303.4 231,277.4"/>
+    <polygon points="172,298.9 196,298.9 184,272.9"/>
+    <polygon points="133.7,290.4 157.7,290.4 145.7,264.4"/>
+    <polygon points="108.7,279 132.7,279 120.7,253"/>
+  </g>
+  <g transform="rotate(-22 106 246)">
+    <path d="M106,200 L106,246 A150,42 0 0 0 406,246 L406,200 A150,42 0 0 0 106,200 Z" fill="#23A866"/>
+    <ellipse cx="256" cy="200" rx="150" ry="42" fill="#7BD88F"/>
+    <g fill="#F4EFE3">
+    <polygon points="379.3,255 403.3,255 391.3,281"/>
+    <polygon points="354.3,266.4 378.3,266.4 366.3,292.4"/>
+    <polygon points="316,274.9 340,274.9 328,300.9"/>
+    <polygon points="269,279.4 293,279.4 281,305.4"/>
+    <polygon points="219,279.4 243,279.4 231,305.4"/>
+    <polygon points="172,274.9 196,274.9 184,300.9"/>
+    <polygon points="133.7,266.4 157.7,266.4 145.7,292.4"/>
+    <polygon points="108.7,255 132.7,255 120.7,281"/>
+    </g>
+    <circle cx="326" cy="202" r="17" fill="#0E2A1F"/>
+    <circle cx="331" cy="197" r="6" fill="#FFB020"/>
+  </g>
+</svg>

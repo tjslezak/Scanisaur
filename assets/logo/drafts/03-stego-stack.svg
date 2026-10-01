@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Scanisaur logo draft 03: Stego Stack">
+  <title>Scanisaur logo draft 03: Stego Stack</title>
+  <g fill="#0E2A1F" stroke="#0E2A1F" stroke-width="10" stroke-linejoin="round">
+    <polygon points="113,232.4 106.7,197.4 118,162.4 144.7,197.4 151,232.4"/>
+    <polygon points="170,218 166.8,166 185,114 210.8,166 214,218"/>
+    <polygon points="231,214 231,146 256,78 281,146 281,214"/>
+    <polygon points="298,218 301.1,166 327,114 345.1,166 342,218"/>
+    <polygon points="361,232.4 367.3,197.4 394,162.4 405.3,197.4 399,232.4"/>
+  </g>
+  <path d="M106,236 L106,294 A150,42 0 0 0 406,294 L406,236 A150,42 0 0 0 106,236 Z" fill="#23A866"/>
+  <path d="M106,308 A150,42 0 0 0 406,308 L406,366 A150,42 0 0 1 106,366 Z" fill="#23A866"/>
+  <path d="M106,380 A150,42 0 0 0 406,380 L406,438 A150,42 0 0 1 106,438 Z" fill="#23A866"/>
+  <ellipse cx="256" cy="236" rx="150" ry="42" fill="#7BD88F"/>
+  <rect x="80" y="295" width="352" height="12" rx="6" fill="#FFB020"/>
+</svg>
