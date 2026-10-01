@@ -12,12 +12,18 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
+#: The SQL dialect Scanisaur checks. Table and column matching follow BigQuery's rules.
+DIALECT = "bigquery"
+
 #: ``query`` reads data; ``write`` changes data, schema or access, exports data, or runs SQL
 #: that isn't visible here (CALL, EXECUTE IMMEDIATE);
 #: ``other`` can't be analyzed (scripting, transactions, unsupported commands).
 StatementKind = Literal["query", "write", "other"]
 
-_QUERIES = (exp.Select, exp.SetOperation)
+_QUERIES = (exp.Select, exp.SetOperation, exp.Subquery)  # a Subquery: (SELECT ...)
+#: Writes whose names are checked when the policy allows writes: the query they run,
+#: and an INSERT's target. Names in other writes (UPDATE, MERGE, ...) aren't checked yet.
+_CHECKED_WRITES = (exp.Insert, exp.Create)
 _WRITES = (
     exp.Insert,
     exp.Update,
@@ -95,6 +101,17 @@ def parse(sql: str, dialect: str) -> list[exp.Expr]:
         except TokenError as error:
             raise SqlParseError(str(error)) from error
     return [tree for tree in trees if tree is not None]
+
+
+def resolvable(tree: exp.Expr) -> exp.Expr | None:
+    """The part of a statement whose names are checked: a query, an INSERT or CREATE
+    with the query it runs, or EXPORT DATA's query. None when names aren't checked."""
+    if isinstance(tree, exp.Export):
+        query = tree.this
+        return query if isinstance(query, exp.Expr) else None
+    if isinstance(tree, (*_QUERIES, *_CHECKED_WRITES)):
+        return tree
+    return None
 
 
 def classify(tree: exp.Expr) -> StatementKind:

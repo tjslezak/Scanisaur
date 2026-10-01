@@ -41,6 +41,7 @@ class TestParse:
     [
         ("SELECT 1", "query", "SELECT"),
         ("SELECT 1 UNION ALL SELECT 2", "query", "UNION"),
+        ("(SELECT 1)", "query", "SUBQUERY"),
         ("FROM t |> SELECT a", "query", "SELECT"),
         ("INSERT INTO t (a) VALUES (1)", "write", "INSERT"),
         ("UPDATE t SET a = 1 WHERE TRUE", "write", "UPDATE"),

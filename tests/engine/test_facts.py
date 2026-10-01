@@ -1,41 +1,61 @@
-"""Facts extraction on a corpus of BigQuery queries (spike for issue #4)."""
+"""Facts extraction on a corpus of BigQuery queries (spike #4, made robust in #6)."""
 
 import pytest
-import sqlglot
-from sqlglot.optimizer.qualify import qualify
 
-from scanisaur.engine.facts import Predicate, QueryFacts, TableFacts, extract
+from scanisaur.catalog import Catalog, Column, Partitioning, Table
+from scanisaur.engine import facts as facts_module
+from scanisaur.engine.facts import FactsError, Predicate, QueryFacts, TableFacts, facts_from_sql
 
-SCHEMA: dict[str, object] = {
-    "proj": {
-        "analytics": {
-            "events": {
-                "event_date": "DATE",
-                "event_ts": "TIMESTAMP",
-                "user_id": "STRING",
-                "event_name": "STRING",
-                "params": "ARRAY<STRUCT<key STRING, value STRING>>",
-                "device": "STRUCT<category STRING, os STRING>",
-                "tags": "ARRAY<STRING>",
-            },
-            "users": {"user_id": "STRING", "country": "STRING", "signup_date": "DATE"},
-            "events_archive": {"event_date": "DATE", "user_id": "STRING"},
-            "raw_logs": {"payload": "STRING"},
-            "plans": {"plan_id": "STRING", "valid_from": "DATE", "valid_to": "DATE"},
-        },
-        "ga4": {"events_*": {"event_name": "STRING", "user_pseudo_id": "STRING"}},
-    }
-}
+
+def columns(**types: str) -> tuple[Column, ...]:
+    return tuple(Column(name, type_) for name, type_ in types.items())
+
+
+CATALOG = Catalog(
+    tables=(
+        Table(
+            "proj",
+            "analytics",
+            "events",
+            columns(
+                event_date="DATE",
+                event_ts="TIMESTAMP",
+                user_id="STRING",
+                event_name="STRING",
+                params="ARRAY<STRUCT<key STRING, value STRING>>",
+                device="STRUCT<category STRING, os STRING>",
+                tags="ARRAY<STRING>",
+            ),
+            partitioning=Partitioning("event_date", "DAY"),
+            clustering=("user_id",),
+        ),
+        Table(
+            "proj",
+            "analytics",
+            "users",
+            columns(user_id="STRING", country="STRING", signup_date="DATE"),
+        ),
+        Table("proj", "analytics", "events_archive", columns(event_date="DATE", user_id="STRING")),
+        Table("proj", "analytics", "raw_logs", columns(payload="STRING")),
+        Table(
+            "proj",
+            "analytics",
+            "plans",
+            columns(plan_id="STRING", valid_from="DATE", valid_to="DATE"),
+        ),
+        Table("proj", "ga4", "events_*", columns(event_name="STRING", user_pseudo_id="STRING")),
+    ),
+    default_project="proj",
+    default_dataset="analytics",
+)
 
 
 def facts_for(sql: str) -> QueryFacts:
-    tree = sqlglot.parse_one(sql, read="bigquery")
-    qualified = qualify(tree, schema=SCHEMA, dialect="bigquery", expand_stars=False)
-    return extract(qualified)
+    return facts_from_sql(sql, CATALOG)
 
 
 def table(facts: QueryFacts, alias: str) -> TableFacts:
-    matches = [t for t in facts.tables if t.table.alias == alias]
+    matches = [t for t in facts.tables if t.alias == alias]
     assert len(matches) == 1, f"expected one table aliased {alias!r}, got {facts.tables}"
     return matches[0]
 
@@ -136,7 +156,7 @@ def test_unnest_is_not_a_table_join() -> None:
     )
     (join,) = facts.joins
     assert join.target_kind == "unnest"
-    assert [t.table.alias for t in facts.tables] == ["e"]
+    assert [t.alias for t in facts.tables] == ["e"]
     assert table(facts, "e").columns == {"user_id", "params", "event_date"}
 
 
@@ -292,17 +312,15 @@ def test_correlated_subquery_columns_count_for_outer_table() -> None:
 
 
 def test_insert_select_reports_source_tables() -> None:
-    tree = sqlglot.parse_one(
-        "INSERT INTO `proj.analytics.users` (user_id) SELECT user_id FROM `proj.analytics.events`",
-        read="bigquery",
+    facts = facts_for(
+        "INSERT INTO `proj.analytics.users` (user_id) SELECT user_id FROM `proj.analytics.events`"
     )
-    facts = extract(qualify(tree, schema=SCHEMA, dialect="bigquery", expand_stars=False))
     assert [t.table.name for t in facts.tables] == ["events"]
 
 
 def test_non_query_is_rejected() -> None:
-    with pytest.raises(ValueError, match="not a query"):
-        extract(sqlglot.parse_one("DROP TABLE `proj.analytics.users`", read="bigquery"))
+    with pytest.raises(FactsError, match="DROP TABLE statements have no query"):
+        facts_for("DROP TABLE `proj.analytics.users`")
 
 
 @pytest.mark.parametrize(
@@ -406,3 +424,520 @@ def test_set_operation_is_aggregated_only_when_every_branch_is(
         f"SELECT COUNT(*) AS n FROM `proj.analytics.events` UNION ALL {second_branch}"
     )
     assert facts.outer_aggregated is aggregated
+
+
+# Issue #6: filters and columns follow CTEs, subqueries and UNION branches.
+
+
+def test_filter_on_cte_column_reaches_the_table() -> None:
+    facts = facts_for(
+        "WITH b AS (SELECT user_id, event_date FROM events) "
+        "SELECT user_id FROM b WHERE event_date = '2026-09-01'"
+    )
+    predicate = only_predicate(table(facts, "events"))
+    assert (predicate.column, predicate.op, predicate.values) == (
+        "event_date",
+        "=",
+        ("'2026-09-01'",),
+    )
+    assert predicate.sql == "`events`.`event_date` = '2026-09-01'"
+
+
+def test_filter_on_derived_table_column_reaches_the_table() -> None:
+    facts = facts_for(
+        "SELECT user_id FROM (SELECT user_id, event_date AS day FROM events) "
+        "WHERE day >= '2026-09-01'"
+    )
+    predicate = only_predicate(table(facts, "events"))
+    assert (predicate.column, predicate.op) == ("event_date", ">=")
+
+
+def test_filter_through_nested_ctes() -> None:
+    facts = facts_for(
+        "WITH a AS (SELECT * FROM events), b AS (SELECT user_id, event_date FROM a) "
+        "SELECT user_id FROM b WHERE event_date = '2026-09-01'"
+    )
+    assert only_predicate(table(facts, "events")).column == "event_date"
+
+
+def test_filter_on_computed_cte_column_keeps_its_wrapper() -> None:
+    facts = facts_for(
+        "WITH b AS (SELECT DATE(event_ts) AS day, user_id FROM events) "
+        "SELECT user_id FROM b WHERE day = '2026-09-01'"
+    )
+    predicate = only_predicate(table(facts, "events"))
+    assert (predicate.column, predicate.wrapper) == ("event_ts", "DATE")
+
+
+def test_filter_on_group_key_passes_group_by() -> None:
+    facts = facts_for(
+        "WITH daily AS (SELECT event_date, COUNT(*) AS n FROM events GROUP BY event_date) "
+        "SELECT * FROM daily WHERE event_date = '2026-09-01'"
+    )
+    assert only_predicate(table(facts, "events")).column == "event_date"
+
+
+@pytest.mark.parametrize(
+    "cte",
+    [
+        "SELECT user_id, COUNT(*) AS n FROM events GROUP BY user_id",
+        "SELECT user_id, ROW_NUMBER() OVER (ORDER BY event_ts) AS n FROM events",
+        "SELECT user_id, (SELECT COUNT(*) FROM users) AS n FROM events",
+    ],
+)
+def test_filter_on_aggregate_window_or_subquery_stays_above(cte: str) -> None:
+    facts = facts_for(f"WITH b AS ({cte}) SELECT user_id FROM b WHERE n > 1")
+    assert table(facts, "events").predicates == ()
+
+
+@pytest.mark.parametrize("clause", ["LIMIT 10", "QUALIFY ROW_NUMBER() OVER () = 1"])
+def test_filter_does_not_pass_limit_or_qualify(clause: str) -> None:
+    facts = facts_for(
+        f"WITH b AS (SELECT user_id, event_date FROM events {clause}) "
+        "SELECT user_id FROM b WHERE event_date = '2026-09-01'"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+def test_cte_referenced_twice_with_different_filters() -> None:
+    facts = facts_for(
+        "WITH x AS (SELECT user_id, event_date FROM events) "
+        "SELECT a.user_id FROM x a JOIN x b ON a.user_id = b.user_id "
+        "WHERE a.event_date = '2026-09-01' AND b.event_date = '2026-09-02'"
+    )
+    events = [t for t in facts.tables if t.table.name == "events"]
+    assert sorted(only_predicate(t).values for t in events) == [
+        ("'2026-09-01'",),
+        ("'2026-09-02'",),
+    ]
+    assert [t.scans for t in events] == [1, 1]
+
+
+def test_filter_reaches_every_union_branch_by_position() -> None:
+    facts = facts_for(
+        "WITH all_events AS ("
+        "SELECT user_id, event_date FROM events "
+        "UNION ALL SELECT user_id AS uid, event_date AS d FROM events_archive) "
+        "SELECT user_id FROM all_events WHERE event_date = '2026-09-01'"
+    )
+    assert only_predicate(table(facts, "events")).column == "event_date"
+    assert only_predicate(table(facts, "events_archive")).column == "event_date"
+
+
+def test_filter_does_not_pass_a_limited_union() -> None:
+    facts = facts_for(
+        "SELECT user_id FROM (SELECT user_id, event_date FROM events "
+        "UNION ALL SELECT user_id, event_date FROM events_archive LIMIT 5) "
+        "WHERE event_date = '2026-09-01'"
+    )
+    assert all(t.predicates == () for t in facts.tables)
+
+
+def test_star_in_cte_reads_only_what_the_reader_uses() -> None:
+    facts = facts_for("WITH b AS (SELECT * FROM events) SELECT user_id FROM b")
+    events = table(facts, "events")
+    assert events.star
+    assert events.columns == {"user_id"}
+
+
+def test_star_in_cte_with_filter_reads_filter_column() -> None:
+    facts = facts_for(
+        "WITH b AS (SELECT * FROM events) SELECT user_id FROM b WHERE event_date = '2026-09-01'"
+    )
+    events = table(facts, "events")
+    assert events.columns == {"user_id", "event_date"}
+    assert only_predicate(events).column == "event_date"
+
+
+def test_star_in_derived_table() -> None:
+    facts = facts_for("SELECT country FROM (SELECT * FROM users)")
+    assert table(facts, "users").columns == {"country"}
+
+
+def test_count_star_over_cte_reads_no_projection_columns() -> None:
+    facts = facts_for("WITH b AS (SELECT user_id, country FROM users) SELECT COUNT(*) AS n FROM b")
+    assert table(facts, "users").columns == frozenset()
+
+
+def test_union_all_reads_only_used_positions() -> None:
+    facts = facts_for(
+        "WITH u AS (SELECT user_id, event_name FROM events "
+        "UNION ALL SELECT user_id, event_date FROM events_archive) SELECT user_id FROM u"
+    )
+    assert table(facts, "events").columns == {"user_id"}
+    assert table(facts, "events_archive").columns == {"user_id"}
+
+
+def test_union_distinct_reads_every_column() -> None:
+    facts = facts_for(
+        "WITH u AS (SELECT user_id, event_name FROM events "
+        "UNION DISTINCT SELECT user_id, CAST(event_date AS STRING) FROM events_archive) "
+        "SELECT user_id FROM u"
+    )
+    assert table(facts, "events").columns == {"user_id", "event_name"}
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        "SELECT DISTINCT user_id, country FROM users",
+        "SELECT country, COUNT(*) AS n FROM users GROUP BY country ORDER BY n",
+    ],
+)
+def test_distinct_and_alias_references_keep_their_columns(inner: str) -> None:
+    facts = facts_for(f"SELECT country FROM ({inner})")
+    assert "country" in table(facts, "users").columns
+    if "DISTINCT" in inner:
+        assert table(facts, "users").columns == {"user_id", "country"}
+
+
+def test_group_by_output_alias_reads_its_column() -> None:
+    facts = facts_for(
+        "WITH d AS (SELECT DATE(event_ts) AS day, COUNT(*) AS n FROM events GROUP BY 1) "
+        "SELECT n FROM d"
+    )
+    assert table(facts, "events").columns == {"event_ts"}
+
+
+def test_unused_correlated_projection_reads_nothing() -> None:
+    facts = facts_for(
+        "WITH b AS (SELECT u.country, (SELECT MAX(e.event_date) FROM events e "
+        "WHERE e.user_id = u.user_id) AS last_seen FROM users u) SELECT country FROM b"
+    )
+    assert table(facts, "u").columns == {"country"}
+
+
+# Issue #6: pseudo-columns in joins.
+
+
+def test_unqualified_table_suffix_in_join_belongs_to_the_wildcard_table() -> None:
+    facts = facts_for(
+        "SELECT g.event_name FROM `ga4.events_*` g JOIN users u ON g.user_pseudo_id = u.user_id "
+        "WHERE _TABLE_SUFFIX > '20260901'"
+    )
+    predicate = only_predicate(table(facts, "g"))
+    assert (predicate.column, predicate.op) == ("_table_suffix", ">")
+    assert table(facts, "u").predicates == ()
+    assert table(facts, "g").columns == {"event_name", "user_pseudo_id"}
+
+
+# Issue #6: a WHERE condition links a join only to sources before it.
+
+
+def test_where_condition_links_only_earlier_sources() -> None:
+    facts = facts_for(
+        "SELECT a.user_id FROM events a, users b, events_archive c WHERE b.user_id = c.user_id"
+    )
+    to_b, to_c = facts.joins
+    assert (to_b.target, to_b.has_condition, to_b.keys) == ("b", False, ())
+    assert (to_c.target, to_c.has_condition, to_c.keys) == (
+        "c",
+        True,
+        (("b.user_id", "c.user_id"),),
+    )
+
+
+def test_non_equality_where_condition_links_a_join() -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM events e, plans p "
+        "WHERE e.event_date BETWEEN p.valid_from AND p.valid_to"
+    )
+    (join,) = facts.joins
+    assert join.has_condition
+    assert join.keys == ()
+
+
+# Outer joins: ON filters only the side that isn't preserved.
+
+
+@pytest.mark.parametrize(
+    ("join", "events_filtered", "users_filtered"),
+    [
+        ("JOIN", True, True),
+        ("LEFT JOIN", False, True),
+        ("RIGHT JOIN", True, False),
+        ("FULL JOIN", False, False),
+    ],
+)
+def test_on_filters_follow_join_side(
+    join: str, events_filtered: bool, users_filtered: bool
+) -> None:
+    facts = facts_for(
+        f"SELECT e.user_id FROM events e {join} users u "
+        "ON e.user_id = u.user_id AND e.event_date = '2026-09-01' AND u.country = 'US'"
+    )
+    assert bool(table(facts, "e").predicates) is events_filtered
+    assert bool(table(facts, "u").predicates) is users_filtered
+
+
+# Issue #6: one entry point that owns parsing and resolution.
+
+
+@pytest.mark.parametrize(
+    ("sql", "message"),
+    [
+        ("SELECT nope FROM events", "Column `nope` does not exist"),
+        ("SELECT FROM WHERE", "could not be parsed"),
+        ("SELECT 1; SELECT 2", "expected one statement, found 2"),
+        ("SELECT * FROM missing_table", "Table `missing_table` does not exist"),
+    ],
+)
+def test_statements_that_do_not_resolve_are_rejected(sql: str, message: str) -> None:
+    with pytest.raises(FactsError, match=message):
+        facts_for(sql)
+
+
+def test_information_schema_has_no_table_facts() -> None:
+    facts = facts_for("SELECT table_name FROM analytics.INFORMATION_SCHEMA.TABLES")
+    assert facts.tables == ()
+
+
+def test_cte_read_twice_per_level_is_visited_once_per_level() -> None:
+    ctes = ["c0 AS (SELECT user_id FROM users)"] + [
+        f"c{i} AS (SELECT a.user_id FROM c{i - 1} a JOIN c{i - 1} b USING (user_id))"
+        for i in range(1, 12)
+    ]
+    facts = facts_for(f"WITH {', '.join(ctes)} SELECT user_id FROM c11")
+    assert table(facts, "users").scans == 2**11
+
+
+def test_too_many_ways_to_read_a_cte_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(facts_module, "_MAX_REVISITS", 0)
+    with pytest.raises(FactsError, match="too many ways"):
+        facts_for(
+            "WITH x AS (SELECT user_id, event_date FROM events) "
+            "SELECT a.user_id FROM x a JOIN x b USING (user_id) "
+            "WHERE a.event_date = '2026-09-01' AND b.event_date = '2026-09-02'"
+        )
+
+
+# Code review of #6.
+
+
+def test_filter_does_not_pass_a_window_over_other_columns() -> None:
+    facts = facts_for(
+        "SELECT * FROM (SELECT event_date, SUM(1) OVER (ORDER BY event_ts) AS running "
+        "FROM events) WHERE event_date = '2026-09-01'"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+def test_filter_on_window_partition_key_passes_the_window() -> None:
+    facts = facts_for(
+        "SELECT * FROM (SELECT event_date, user_id, "
+        "ROW_NUMBER() OVER (PARTITION BY event_date ORDER BY event_ts) AS rn FROM events) "
+        "WHERE event_date = '2026-09-01' AND user_id = 'u1'"
+    )
+    assert [p.column for p in table(facts, "events").predicates] == ["event_date"]
+
+
+def test_filter_does_not_enter_a_recursive_cte() -> None:
+    facts = facts_for(
+        "WITH RECURSIVE r AS (SELECT event_date AS d FROM events WHERE user_id = 'a' "
+        "UNION ALL SELECT DATE_ADD(r.d, INTERVAL 1 DAY) AS d FROM r WHERE r.d < '2026-02-01') "
+        "SELECT * FROM r WHERE d = '2026-01-15'"
+    )
+    events = table(facts, "events")
+    assert [p.column for p in events.predicates] == ["user_id"]
+    assert events.scans == 1
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT x FROM UNNEST((SELECT ARRAY_AGG(user_id) FROM users)) AS x",
+        "SELECT e.user_id FROM events e "
+        "CROSS JOIN UNNEST((SELECT ARRAY_AGG(country) FROM users)) AS c",
+    ],
+)
+def test_subquery_inside_unnest_is_read(sql: str) -> None:
+    assert "users" in [t.table.name for t in facts_for(sql).tables]
+
+
+def test_long_union_all_chain_does_not_recurse() -> None:
+    branches = " UNION ALL ".join(
+        f"SELECT user_id FROM events WHERE event_date = '2026-01-{i % 28 + 1:02d}'"
+        for i in range(600)
+    )
+    facts = facts_for(branches)
+    assert sum(t.scans for t in facts.tables) == 600
+
+
+def test_export_data_reports_the_exported_query() -> None:
+    facts = facts_for(
+        "EXPORT DATA OPTIONS (uri = 'gs://b/*.csv', format = 'CSV') AS "
+        "SELECT user_id FROM events WHERE event_date = '2026-09-01'"
+    )
+    assert only_predicate(table(facts, "events")).column == "event_date"
+
+
+@pytest.mark.parametrize(
+    ("condition", "filtered"),
+    [
+        ("u.signup_date IS NULL", False),
+        ("COALESCE(u.country, 'US') = 'US'", False),
+        ("u.country = 'US'", True),
+    ],
+)
+def test_where_on_outer_joined_side_counts_only_if_it_rejects_nulls(
+    condition: str, filtered: bool
+) -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM events e LEFT JOIN (SELECT user_id, country, signup_date "
+        f"FROM users) u ON e.user_id = u.user_id WHERE {condition}"
+    )
+    assert bool(table(facts, "users").predicates) is filtered
+
+
+def test_subquery_in_unread_output_column_is_not_scanned() -> None:
+    facts = facts_for(
+        "WITH c AS (SELECT user_id, (SELECT MAX(signup_date) FROM users) AS m FROM events) "
+        "SELECT user_id FROM c"
+    )
+    assert [t.table.name for t in facts.tables] == ["events"]
+
+
+@pytest.mark.parametrize(
+    ("sql", "alias"),
+    [
+        ("SELECT TO_JSON_STRING(t) AS j FROM (SELECT user_id, event_date FROM events) t", "events"),
+        ("WITH b AS (SELECT user_id, event_date FROM events) SELECT b FROM b", "events"),
+        ("SELECT ARRAY_AGG(e) AS rows FROM events e", "e"),
+    ],
+)
+def test_whole_row_reference_reads_every_column(sql: str, alias: str) -> None:
+    columns = table(facts_for(sql), alias).columns
+    assert {"user_id", "event_date"} <= columns
+    if alias == "e":
+        assert columns == {c.name for c in CATALOG.tables[0].columns}
+
+
+@pytest.mark.parametrize("condition", ["d.country IS NULL", "COALESCE(d.country, 'x') = 'x'"])
+def test_reader_on_filter_skips_inner_outer_join_nulls(condition: str) -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM events e LEFT JOIN (SELECT ev.event_date, u2.country "
+        "FROM events ev LEFT JOIN users u2 ON ev.user_id = u2.user_id) d "
+        f"ON e.event_date = d.event_date AND {condition}"
+    )
+    assert table(facts, "u2").predicates == ()
+
+
+# Code review of PR #8.
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "(SELECT user_id FROM events WHERE event_date = '2026-09-01')",
+        "(SELECT user_id FROM events WHERE event_date = '2026-09-01') LIMIT 5",
+    ],
+)
+def test_query_in_parentheses(sql: str) -> None:
+    assert only_predicate(table(facts_for(sql), "events")).column == "event_date"
+
+
+def test_update_has_no_facts() -> None:
+    with pytest.raises(FactsError, match="UPDATE statements have no query"):
+        facts_for(
+            "UPDATE users SET country = (SELECT MAX(event_name) FROM events) "
+            "WHERE user_id IN (SELECT user_id FROM events_archive)"
+        )
+
+
+@pytest.mark.parametrize(
+    "aggregate", ["`proj.analytics.mode_agg`(event_date)", "HLL_COUNT.INIT(event_date)"]
+)
+def test_filter_does_not_pass_an_unknown_aggregate(aggregate: str) -> None:
+    facts = facts_for(
+        f"SELECT * FROM (SELECT user_id, {aggregate} AS d FROM events GROUP BY user_id) "
+        "WHERE d = '2026-09-01'"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+def test_filter_on_non_key_column_does_not_pass_group_by() -> None:
+    facts = facts_for(
+        "SELECT * FROM (SELECT user_id, ANY_VALUE(event_date) AS d FROM events GROUP BY user_id) "
+        "WHERE d = '2026-09-01'"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+def test_filter_does_not_pass_rollup() -> None:
+    facts = facts_for(
+        "SELECT * FROM (SELECT event_date AS d, COUNT(*) AS n FROM events "
+        "GROUP BY ROLLUP (event_date)) WHERE d IS NULL"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "((SELECT user_id, event_date AS d FROM events) LIMIT 5)",
+        "((SELECT user_id, event_date AS d FROM events "
+        "UNION ALL SELECT user_id, event_date FROM events_archive) LIMIT 5)",
+    ],
+)
+def test_filter_does_not_pass_limit_on_parentheses(source: str) -> None:
+    facts = facts_for(f"SELECT * FROM {source} WHERE d = '2026-09-01'")
+    assert all(t.predicates == () for t in facts.tables)
+
+
+def test_union_by_name_matches_columns_by_name() -> None:
+    union = (
+        "(SELECT user_id AS a, country AS b FROM users "
+        "UNION ALL BY NAME SELECT country AS b, user_id AS a FROM users)"
+    )
+    filtered = facts_for(f"SELECT * FROM {union} WHERE a = 'x'")
+    assert {p.column for t in filtered.tables for p in t.predicates} == {"user_id"}
+    pruned = facts_for(f"SELECT b FROM {union}")
+    assert {c for t in pruned.tables for c in t.columns} == {"country"}
+
+
+def test_union_order_by_reads_its_column_in_every_branch() -> None:
+    facts = facts_for(
+        "SELECT a FROM (SELECT user_id AS a, event_date AS b FROM events "
+        "UNION ALL SELECT user_id, event_date FROM events_archive ORDER BY b LIMIT 10)"
+    )
+    assert all(t.columns == {"user_id", "event_date"} for t in facts.tables)
+
+
+@pytest.mark.parametrize("connector", [" AND ", " OR "])
+def test_long_condition_chains_do_not_recurse(connector: str) -> None:
+    condition = connector.join(f"user_id != 'u{i}'" for i in range(1_200))
+    facts = facts_for(f"SELECT user_id FROM events WHERE {condition}")
+    assert table(facts, "events").columns == {"user_id"}
+
+
+def test_filters_differing_only_in_literal_type_stay_apart() -> None:
+    facts = facts_for(
+        "WITH c AS (SELECT user_id FROM users) "
+        "SELECT * FROM c WHERE CAST(user_id AS BYTES) = b'a' "
+        "UNION ALL SELECT * FROM c WHERE CAST(user_id AS BYTES) = b'b'"
+    )
+    users = [t for t in facts.tables if t.table.name == "users"]
+    assert len(users) == 2
+
+
+def test_plain_cte_in_with_recursive_still_takes_filters() -> None:
+    facts = facts_for(
+        "WITH RECURSIVE a AS (SELECT * FROM events) "
+        "SELECT user_id FROM a WHERE event_date = '2026-09-01'"
+    )
+    events = table(facts, "events")
+    assert only_predicate(events).column == "event_date"
+    assert events.columns == {"user_id", "event_date"}
+
+
+def test_star_over_duplicate_names_reads_the_columns() -> None:
+    facts = facts_for("SELECT * FROM (SELECT u.country, u.country FROM users u)")
+    assert table(facts, "u").columns == {"country"}
+
+
+def test_inner_join_on_does_not_filter_an_outer_joined_side_with_is_null() -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM events e LEFT JOIN users u ON e.user_id = u.user_id "
+        "JOIN events_archive a ON a.user_id = e.user_id AND u.signup_date IS NULL"
+    )
+    assert table(facts, "u").predicates == ()
