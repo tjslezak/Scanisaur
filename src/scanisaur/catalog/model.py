@@ -1,0 +1,111 @@
+"""Warehouse-neutral catalog model.
+
+A catalog is a snapshot of warehouse metadata: tables, columns, partitioning and
+sizes. It never contains row data.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+Granularity = Literal["HOUR", "DAY", "MONTH", "YEAR", "RANGE"]
+TableKind = Literal["TABLE", "VIEW", "MATERIALIZED_VIEW", "EXTERNAL"]
+
+#: BigQuery pseudo-columns. They never appear in ``SELECT *``.
+TABLE_SUFFIX = "_TABLE_SUFFIX"
+PARTITIONTIME = "_PARTITIONTIME"
+PARTITIONDATE = "_PARTITIONDATE"
+
+
+@dataclass(frozen=True, slots=True)
+class Column:
+    name: str
+    type: str
+    description: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Partitioning:
+    #: The partition column; None for ingestion-time partitioning (``_PARTITIONTIME``).
+    column: str | None
+    granularity: Granularity
+    #: BigQuery rejects queries that don't filter on the partition column.
+    required: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Table:
+    project: str
+    dataset: str
+    #: Table name; a wildcard family such as ``events_*`` stands for sharded tables.
+    name: str
+    columns: tuple[Column, ...]
+    kind: TableKind = "TABLE"
+    row_count: int | None = None
+    size_bytes: int | None = None
+    partitioning: Partitioning | None = None
+    clustering: tuple[str, ...] = ()
+    description: str = ""
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.project}.{self.dataset}.{self.name}"
+
+    @property
+    def is_wildcard(self) -> bool:
+        return self.name.endswith("*")
+
+    @property
+    def pseudo_columns(self) -> frozenset[str]:
+        """BigQuery pseudo-columns this table can be filtered on."""
+        names: set[str] = set()
+        if self.is_wildcard:
+            names.add(TABLE_SUFFIX)
+        if self.partitioning is not None and self.partitioning.column is None:
+            names |= {PARTITIONTIME, PARTITIONDATE}
+        return frozenset(names)
+
+    def column(self, name: str) -> Column | None:
+        """Look up a column. BigQuery column names are case-insensitive."""
+        lowered = name.lower()
+        return next((c for c in self.columns if c.name.lower() == lowered), None)
+
+
+@dataclass(frozen=True, slots=True)
+class Catalog:
+    tables: tuple[Table, ...]
+    #: Used for table references that leave out the project or dataset.
+    default_project: str | None = None
+    default_dataset: str | None = None
+    _index: dict[str, Table] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_index", {t.qualified_name: t for t in self.tables})
+
+    def find(
+        self, name: str, dataset: str | None = None, project: str | None = None
+    ) -> Table | None:
+        """Find a table by its name parts, filling in the default project and dataset.
+
+        Table names are case-sensitive, as in BigQuery. A narrower wildcard such as
+        ``events_2026*`` resolves to its family ``events_*``.
+        """
+        project = project or self.default_project
+        dataset = dataset or self.default_dataset
+        if project is None or dataset is None:
+            return None
+        table = self._index.get(f"{project}.{dataset}.{name}")
+        if table is not None or not name.endswith("*"):
+            return table
+        prefix = name[:-1]
+        return next(
+            (
+                t
+                for t in self.tables
+                if t.is_wildcard
+                and (t.project, t.dataset) == (project, dataset)
+                and prefix.startswith(t.name[:-1])
+            ),
+            None,
+        )
