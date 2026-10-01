@@ -21,7 +21,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, find_all_in_scope, traverse_scope
 
 from scanisaur.catalog.model import Catalog, Table
-from scanisaur.engine.parse import DIALECT, SqlParseError, parse, resolvable
+from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, resolvable
 from scanisaur.engine.resolve import Resolution, ResolveError, TableKey, resolve, stars_of
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
@@ -125,8 +125,12 @@ def facts_from_sql(sql: str, catalog: Catalog) -> QueryFacts:
         raise FactsError(f"the SQL could not be parsed: {error.message}") from error
     if len(statements) != 1:
         raise FactsError(f"expected one statement, found {len(statements)}")
+    (tree,) = statements
+    target = resolvable(tree)
+    if target is None:
+        raise FactsError(f"{describe(tree)} statements have no query to describe")
     try:
-        resolution = resolve(resolvable(statements[0]), catalog, DIALECT)
+        resolution = resolve(target, catalog, DIALECT)
     except ResolveError as error:
         raise FactsError(f"names could not be resolved: {error}") from error
     return extract(resolution)
@@ -183,6 +187,7 @@ class _Walk:
         self._joined: set[int] = set()
         self._visits = 0
         self._budget = len(scopes) + _MAX_REVISITS
+        self._names: dict[int, list[str]] = {}
         self.joins: list[Join] = []
         self._schedule(scopes[-1], None, (), 1)
 
@@ -211,7 +216,7 @@ class _Walk:
         if position is None:
             return  # not a scope of this statement, e.g. a recursive CTE's self-reference
         pushed = tuple(pushed)
-        key = (needed, tuple((p.clause, p.alias, p.condition.sql()) for p in pushed))
+        key = (needed, tuple((p.clause, p.alias, p.condition) for p in pushed))
         bucket = self._pending.get(id(scope))
         if bucket is None:
             bucket = self._pending[id(scope)] = {}
@@ -219,35 +224,57 @@ class _Walk:
         item, count = bucket.get(key, (_Item(needed, pushed), 0))
         bucket[key] = (item, count + runs)
 
+    def _output_names(self, expression: exp.Expr) -> list[str]:
+        """A query's output column names. A long UNION chain shares its leftmost
+        branch's names, so they are looked up once for the whole chain."""
+        chain: list[exp.Expr] = []
+        node = expression
+        while id(node) not in self._names and isinstance(node, exp.SetOperation | exp.Subquery):
+            chain.append(node)
+            node = node.this  # the left operand, or the query in parentheses
+        names = self._names.get(id(node))
+        if names is None:
+            names = [n.lower() for n in node.named_selects] if isinstance(node, exp.Query) else []
+        for visited in [*chain, node]:
+            self._names[id(visited)] = names
+        return names
+
     def _visit(self, scope: Scope, item: _Item, runs: int) -> None:
         expression = scope.expression
         if isinstance(expression, exp.SetOperation):
             self._visit_set_operation(scope, expression, item, runs)
         elif isinstance(expression, exp.Select):
             self._visit_select(scope, expression, item, runs)
-        else:  # UNNEST and table functions: only the subqueries inside them read tables
-            for subquery in scope.subquery_scopes:
-                self._schedule(subquery, None, (), runs)
+        else:  # parentheses around a query, UNNEST, table functions: only what's inside reads
+            for child in [*scope.derived_table_scopes, *scope.subquery_scopes, *scope.udtf_scopes]:
+                self._schedule(child, None, (), runs)
 
     def _visit_set_operation(
         self, scope: Scope, operation: exp.SetOperation, item: _Item, runs: int
     ) -> None:
         recursive = _is_recursive(scope)
         pushed = item.pushed
-        if recursive or operation.args.get("limit") or operation.args.get("offset"):
+        if recursive or _limited(operation):
             pushed = ()  # the filter runs on rows the recursion or the LIMIT produced
         # UNION DISTINCT, INTERSECT and EXCEPT compare whole rows, so every column is read.
-        by_position = (
+        prunes = (
             isinstance(operation, exp.Union)
             and not operation.args.get("distinct")
             and not recursive
         )
-        names = _output_names(operation)
+        names = self._output_names(operation)
+        needed = item.needed
+        if needed is not None:  # ORDER BY on the UNION reads its columns in every branch
+            needed = needed | _named_in(operation.args.get("order"), set(names))
         for branch in scope.set_operation_scopes:
-            renamed = dict(zip(names, _output_names(branch.expression), strict=False))
+            branch_names = self._output_names(branch.expression)
+            if operation.args.get("by_name"):  # BY NAME and CORRESPONDING match by name
+                renamed = {name: name for name in names if name in branch_names}
+            else:
+                renamed = dict(zip(names, branch_names, strict=False))
             branch_needed = None
-            if item.needed is not None and by_position:
-                branch_needed = frozenset(renamed[n] for n in item.needed if n in renamed)
+            if needed is not None and prunes:
+                branch_needed = frozenset(renamed[n] for n in needed if n in renamed)
             branch_pushed = [
                 p._replace(condition=_rename(p.condition, p.alias, renamed)) for p in pushed
             ]
@@ -258,24 +285,17 @@ class _Walk:
         nullable = _null_supplying(select)
         predicates: dict[str, list[Predicate]] = {alias: [] for alias in tables}
         pushdown: dict[str, list[_Pushed]] = {alias: [] for alias in derived}
-        own = [
-            (clause, condition, filtered, False)
-            for clause, condition, filtered in _conditions(select)
-        ]
-        inherited = [
-            (clause, condition, None, True) for clause, condition in _inherited(select, item)
-        ]
-        for clause, condition, filtered, from_reader in [*own, *inherited]:
+        inherited = [(clause, condition, None) for clause, condition in _inherited(select, item)]
+        for clause, condition, filtered in [*_conditions(select), *inherited]:
             owners = {column.table for column in _local_columns(condition)}
             if len(owners) != 1:
                 continue
             (owner,) = owners
             if filtered is not None and owner not in filtered:
                 continue
-            # A reader's filter acts like WHERE here: on a side an outer join fills with
-            # NULLs, `u.id IS NULL` keeps the unmatched rows rather than filtering u.
-            acts_as_where = clause == "where" or from_reader
-            if acts_as_where and owner in nullable and not _null_rejecting(condition):
+            # On a side an outer join fills with NULLs, `u.id IS NULL` keeps the
+            # unmatched rows rather than filtering u.
+            if owner in nullable and not _null_rejecting(condition):
                 continue
             if owner in tables:
                 predicate = _classify(condition, clause)
@@ -377,10 +397,37 @@ def _null_rejecting(condition: exp.Expr) -> bool:
 
 
 def _is_recursive(scope: Scope) -> bool:
-    """A CTE of WITH RECURSIVE: no filter moves into it and all its columns are read."""
+    """A CTE that reads itself: no filter moves into it and all its columns are read."""
     cte = scope.expression.parent
-    with_ = cte.parent if isinstance(cte, exp.CTE) else None
-    return isinstance(with_, exp.With) and bool(with_.args.get("recursive"))
+    if not isinstance(cte, exp.CTE):
+        return False
+    with_ = cte.parent
+    if not (isinstance(with_, exp.With) and with_.args.get("recursive")):
+        return False
+    name = cte.alias.lower()
+    return any(not t.db and t.name.lower() == name for t in cte.this.find_all(exp.Table))
+
+
+def _limited(query: exp.Expr) -> bool:
+    """True when a LIMIT or OFFSET picks the query's rows, on the query itself or on
+    parentheses around it, as in ``((SELECT ...) LIMIT 5)``."""
+    node: exp.Expr | None = query
+    while node is not None:
+        if node.args.get("limit") or node.args.get("offset"):
+            return True
+        node = node.parent if isinstance(node.parent, exp.Subquery) else None
+    return False
+
+
+def _named_in(clause: exp.Expr | None, names: set[str]) -> frozenset[str]:
+    """The output columns a clause such as ORDER BY names by alias."""
+    if clause is None:
+        return frozenset()
+    return frozenset(
+        c.name.lower()
+        for c in find_all_in_scope(clause, exp.Column)
+        if not c.table and c.name.lower() in names
+    )
 
 
 def _within(node: exp.Expr, ancestor: exp.Expr) -> bool:
@@ -392,12 +439,6 @@ def _within(node: exp.Expr, ancestor: exp.Expr) -> bool:
     return False
 
 
-def _output_names(expression: exp.Expr) -> list[str]:
-    return (
-        [n.lower() for n in expression.named_selects] if isinstance(expression, exp.Query) else []
-    )
-
-
 def _from_alias(select: exp.Select) -> str:
     from_ = select.args.get("from_")
     return from_.this.alias_or_name if isinstance(from_, exp.From) else ""
@@ -405,9 +446,9 @@ def _from_alias(select: exp.Select) -> str:
 
 def _inherited(select: exp.Select, item: _Item) -> Iterator[tuple[Clause, exp.Expr]]:
     """The reader's filters, rewritten in terms of this SELECT's own sources."""
-    if any(select.args.get(key) for key in ("limit", "offset", "qualify")):
+    if _limited(select) or select.args.get("qualify"):
         return  # the reader's filter runs on rows these clauses already picked
-    projections = {p.alias_or_name.lower(): p.unalias() for p in select.expressions}
+    pushable = _pushable(select)
     # A filter can move below window functions only if it keeps or drops whole
     # partitions: every column it reads must be in every window's PARTITION BY.
     windows = [w for p in select.expressions for w in p.find_all(exp.Window)]
@@ -416,12 +457,34 @@ def _inherited(select: exp.Select, item: _Item) -> Iterator[tuple[Clause, exp.Ex
         for w in windows
     ]
     for clause, condition, alias in item.pushed:
-        translated = _translate(condition, alias, projections)
+        translated = _translate(condition, alias, pushable)
         if translated is None:
             continue
         if any(not {_key(c) for c in _local_columns(translated)} <= k for k in keys):
             continue
         yield clause, translated
+
+
+def _pushable(select: exp.Select) -> dict[str, exp.Expr]:
+    """The output columns a reader's filter can be rewritten through, by name."""
+    group = select.args.get("group")
+    group_items = list(group.expressions) if group is not None else []
+    if any(isinstance(g, exp.Rollup | exp.Cube | exp.GroupingSets) for g in group_items):
+        return {}  # their total rows have NULL keys and read every input row
+    projections = {p.alias_or_name.lower(): p.unalias() for p in select.expressions}
+    if group is None and any(p.find(exp.AggFunc) for p in projections.values()):
+        return {}  # one row for the whole input
+    alias_keys = _named_in(group, set(projections))
+    pushable: dict[str, exp.Expr] = {}
+    for name, projection in projections.items():
+        # An aggregate, a window, a subquery, or a function sqlglot doesn't know, such
+        # as a user-defined aggregate, doesn't pass a filter through to its input.
+        if projection.find(exp.AggFunc, exp.Window, exp.Query, exp.Anonymous):
+            continue
+        if group is not None and name not in alias_keys and projection not in group_items:
+            continue  # only grouping keys pass GROUP BY
+        pushable[name] = projection
+    return pushable
 
 
 def _key(column: exp.Column) -> tuple[str, str]:
@@ -431,14 +494,13 @@ def _key(column: exp.Column) -> tuple[str, str]:
 def _translate(
     condition: exp.Expr, alias: str, projections: dict[str, exp.Expr]
 ) -> exp.Expr | None:
-    """Replace ``alias.name`` with the expression that produces it; None when the filter
-    can't move below the SELECT (it reads an aggregate, a window or a subquery)."""
-    for column in condition.find_all(exp.Column):
-        if column.table != alias:
-            continue
-        projection = projections.get(column.name.lower())
-        if projection is None or projection.find(exp.AggFunc, exp.Window, exp.Query):
-            return None
+    """Replace ``alias.name`` with the expression that produces it; None when a column
+    the filter reads has no pushable expression."""
+    if any(
+        column.table == alias and column.name.lower() not in projections
+        for column in condition.find_all(exp.Column)
+    ):
+        return None
 
     def substitute(node: exp.Expr) -> exp.Expr:
         if not isinstance(node, exp.Column) or node.table != alias:
@@ -478,11 +540,18 @@ def _read_columns(scope: Scope, select: exp.Select, needed: frozenset[str] | Non
         for node in projection.find_all(exp.Column, exp.TableColumn)
     }
     # qualify() turns a whole-row reference such as TO_JSON_STRING(t) into a TableColumn.
-    whole_rows = frozenset(
+    whole = {
         node.name
         for node in find_all_in_scope(select, exp.TableColumn)
         if node.name in scope.selected_sources and id(node) not in skipped
-    )
+    }
+    # A star qualify() couldn't expand (duplicate column names) reads whole rows too.
+    for projection in select.expressions:
+        if isinstance(projection, exp.Star):
+            whole |= set(scope.selected_sources)
+        elif isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
+            whole.add(projection.table)
+    whole_rows = frozenset(whole)
     return _Reads([c for c in columns if id(c) not in skipped], whole_rows, unused)
 
 
@@ -498,19 +567,29 @@ def _unused(select: exp.Select, needed: frozenset[str]) -> list[exp.Expr]:
                 for c in find_all_in_scope(clause, exp.Column)
                 if not c.table and c.name.lower() in aliases
             }
-    return [p for p in select.expressions if p.alias_or_name.lower() not in used]
+    return [
+        p
+        for p in select.expressions
+        if p.alias_or_name.lower() not in used and not p.find(exp.Star)
+    ]
 
 
 def _conjuncts(condition: exp.Expr | None) -> Iterator[exp.Expr]:
-    if condition is None:
-        return
-    if isinstance(condition, exp.Paren):
-        yield from _conjuncts(condition.this)
-    elif isinstance(condition, exp.And):
-        yield from _conjuncts(condition.left)
-        yield from _conjuncts(condition.right)
-    else:
-        yield condition
+    return _operands(condition, exp.And)
+
+
+def _operands(condition: exp.Expr | None, connector: type[exp.Connector]) -> Iterator[exp.Expr]:
+    """The operands of a chain of ANDs or ORs, left to right, through parentheses.
+    Iterative, so a chain of a thousand conditions doesn't exhaust the stack."""
+    stack = [condition] if condition is not None else []
+    while stack:
+        node = stack.pop()
+        if isinstance(node, exp.Paren):
+            stack.append(node.this)
+        elif isinstance(node, connector):
+            stack.extend((node.right, node.left))
+        else:
+            yield node
 
 
 def _local_columns(node: exp.Expr) -> list[exp.Column]:
@@ -585,13 +664,7 @@ def _in_values(condition: exp.In) -> list[exp.Expr]:
 
 
 def _disjuncts(condition: exp.Expr) -> Iterator[exp.Expr]:
-    if isinstance(condition, exp.Paren):
-        yield from _disjuncts(condition.this)
-    elif isinstance(condition, exp.Or):
-        yield from _disjuncts(condition.left)
-        yield from _disjuncts(condition.right)
-    else:
-        yield condition
+    return _operands(condition, exp.Or)
 
 
 def _equality_disjunction(condition: exp.Or) -> tuple[exp.Expr, list[exp.Expr]] | None:
@@ -692,18 +765,28 @@ def _outer_shape(expression: exp.Expr) -> tuple[int | None, bool]:
 
 
 def _aggregated(expression: exp.Expr) -> bool:
-    """True when the query returns one row per group rather than one per input row."""
-    if isinstance(expression, exp.Subquery):
-        return _aggregated(expression.this)
-    if isinstance(expression, exp.SetOperation):
-        return _aggregated(expression.left) and _aggregated(expression.right)
-    if not isinstance(expression, exp.Select):
+    """True when the query returns one row per group rather than one per input row;
+    for a set operation, when every branch does."""
+    stack = [expression]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, exp.Subquery):
+            stack.append(node.this)
+        elif isinstance(node, exp.SetOperation):
+            stack.extend((node.left, node.right))
+        elif not _select_aggregated(node):
+            return False
+    return True
+
+
+def _select_aggregated(node: exp.Expr) -> bool:
+    if not isinstance(node, exp.Select):
         return False
-    if expression.args.get("group"):
+    if node.args.get("group"):
         return True
     # Aggregates inside scalar subqueries or window functions don't collapse the rows.
     return any(
         aggregate.find_ancestor(exp.Window) is None
-        for projection in expression.expressions
+        for projection in node.expressions
         for aggregate in find_all_in_scope(projection, exp.AggFunc)
     )

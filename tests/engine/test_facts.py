@@ -319,7 +319,7 @@ def test_insert_select_reports_source_tables() -> None:
 
 
 def test_non_query_is_rejected() -> None:
-    with pytest.raises(FactsError, match="not a query"):
+    with pytest.raises(FactsError, match="DROP TABLE statements have no query"):
         facts_for("DROP TABLE `proj.analytics.users`")
 
 
@@ -820,3 +820,124 @@ def test_reader_on_filter_skips_inner_outer_join_nulls(condition: str) -> None:
         f"ON e.event_date = d.event_date AND {condition}"
     )
     assert table(facts, "u2").predicates == ()
+
+
+# Code review of PR #8.
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "(SELECT user_id FROM events WHERE event_date = '2026-09-01')",
+        "(SELECT user_id FROM events WHERE event_date = '2026-09-01') LIMIT 5",
+    ],
+)
+def test_query_in_parentheses(sql: str) -> None:
+    assert only_predicate(table(facts_for(sql), "events")).column == "event_date"
+
+
+def test_update_has_no_facts() -> None:
+    with pytest.raises(FactsError, match="UPDATE statements have no query"):
+        facts_for(
+            "UPDATE users SET country = (SELECT MAX(event_name) FROM events) "
+            "WHERE user_id IN (SELECT user_id FROM events_archive)"
+        )
+
+
+@pytest.mark.parametrize(
+    "aggregate", ["`proj.analytics.mode_agg`(event_date)", "HLL_COUNT.INIT(event_date)"]
+)
+def test_filter_does_not_pass_an_unknown_aggregate(aggregate: str) -> None:
+    facts = facts_for(
+        f"SELECT * FROM (SELECT user_id, {aggregate} AS d FROM events GROUP BY user_id) "
+        "WHERE d = '2026-09-01'"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+def test_filter_on_non_key_column_does_not_pass_group_by() -> None:
+    facts = facts_for(
+        "SELECT * FROM (SELECT user_id, ANY_VALUE(event_date) AS d FROM events GROUP BY user_id) "
+        "WHERE d = '2026-09-01'"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+def test_filter_does_not_pass_rollup() -> None:
+    facts = facts_for(
+        "SELECT * FROM (SELECT event_date AS d, COUNT(*) AS n FROM events "
+        "GROUP BY ROLLUP (event_date)) WHERE d IS NULL"
+    )
+    assert table(facts, "events").predicates == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "((SELECT user_id, event_date AS d FROM events) LIMIT 5)",
+        "((SELECT user_id, event_date AS d FROM events "
+        "UNION ALL SELECT user_id, event_date FROM events_archive) LIMIT 5)",
+    ],
+)
+def test_filter_does_not_pass_limit_on_parentheses(source: str) -> None:
+    facts = facts_for(f"SELECT * FROM {source} WHERE d = '2026-09-01'")
+    assert all(t.predicates == () for t in facts.tables)
+
+
+def test_union_by_name_matches_columns_by_name() -> None:
+    union = (
+        "(SELECT user_id AS a, country AS b FROM users "
+        "UNION ALL BY NAME SELECT country AS b, user_id AS a FROM users)"
+    )
+    filtered = facts_for(f"SELECT * FROM {union} WHERE a = 'x'")
+    assert {p.column for t in filtered.tables for p in t.predicates} == {"user_id"}
+    pruned = facts_for(f"SELECT b FROM {union}")
+    assert {c for t in pruned.tables for c in t.columns} == {"country"}
+
+
+def test_union_order_by_reads_its_column_in_every_branch() -> None:
+    facts = facts_for(
+        "SELECT a FROM (SELECT user_id AS a, event_date AS b FROM events "
+        "UNION ALL SELECT user_id, event_date FROM events_archive ORDER BY b LIMIT 10)"
+    )
+    assert all(t.columns == {"user_id", "event_date"} for t in facts.tables)
+
+
+@pytest.mark.parametrize("connector", [" AND ", " OR "])
+def test_long_condition_chains_do_not_recurse(connector: str) -> None:
+    condition = connector.join(f"user_id != 'u{i}'" for i in range(1_200))
+    facts = facts_for(f"SELECT user_id FROM events WHERE {condition}")
+    assert table(facts, "events").columns == {"user_id"}
+
+
+def test_filters_differing_only_in_literal_type_stay_apart() -> None:
+    facts = facts_for(
+        "WITH c AS (SELECT user_id FROM users) "
+        "SELECT * FROM c WHERE CAST(user_id AS BYTES) = b'a' "
+        "UNION ALL SELECT * FROM c WHERE CAST(user_id AS BYTES) = b'b'"
+    )
+    users = [t for t in facts.tables if t.table.name == "users"]
+    assert len(users) == 2
+
+
+def test_plain_cte_in_with_recursive_still_takes_filters() -> None:
+    facts = facts_for(
+        "WITH RECURSIVE a AS (SELECT * FROM events) "
+        "SELECT user_id FROM a WHERE event_date = '2026-09-01'"
+    )
+    events = table(facts, "events")
+    assert only_predicate(events).column == "event_date"
+    assert events.columns == {"user_id", "event_date"}
+
+
+def test_star_over_duplicate_names_reads_the_columns() -> None:
+    facts = facts_for("SELECT * FROM (SELECT u.country, u.country FROM users u)")
+    assert table(facts, "u").columns == {"country"}
+
+
+def test_inner_join_on_does_not_filter_an_outer_joined_side_with_is_null() -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM events e LEFT JOIN users u ON e.user_id = u.user_id "
+        "JOIN events_archive a ON a.user_id = e.user_id AND u.signup_date IS NULL"
+    )
+    assert table(facts, "u").predicates == ()

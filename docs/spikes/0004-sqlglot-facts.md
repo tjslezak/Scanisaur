@@ -75,4 +75,5 @@ It also extracts join facts, and the `LIMIT` and aggregation of the effective ou
 - `SELECT * EXCEPT (...)` stores the excluded columns in `Star.args["except_"]`.
 - `qualify()` turns BigQuery pseudo-columns (`_TABLE_SUFFIX`, `_PARTITIONTIME`, `_PARTITIONDATE`) into `exp.Pseudocolumn` nodes, a `Column` subclass that `Scope.columns` leaves out; find them by node type.
 - `qualify()` rewrites `GROUP BY 1` into a reference to the output alias, so `GROUP BY`, `ORDER BY`, `HAVING` and `QUALIFY` can name output columns.
-- `qualify()` changes the tree in place: `id()` of a `SELECT` before it equals `id()` after it, which `resolve()` relies on to carry star information across.
+- `qualify()` expands stars and drops their `EXCEPT` and `REPLACE` lists, so `resolve()` first records them in each `SELECT` node's `meta`, which travels with the node (`stars_of()`).
+- `qualify()` turns a whole-row reference such as `TO_JSON_STRING(t)` into an `exp.TableColumn`; functions sqlglot doesn't know, including user-defined aggregates, parse as `exp.Anonymous`.

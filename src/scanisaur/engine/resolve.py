@@ -55,6 +55,11 @@ _SEARCH = "Find the table with scanisaur_schema_search."
 TableKey = tuple[str, str, str]
 #: The node ``meta`` key that holds a SELECT's stars.
 _STARS = "scanisaur.stars"
+#: sqlglot renames node arguments between major versions. Fail at import rather than
+#: silently treating every ``SELECT * EXCEPT (...)`` as reading all columns.
+_STAR_EXCEPT, _STAR_REPLACE = "except_", "replace"
+if not {_STAR_EXCEPT, _STAR_REPLACE} <= set(exp.Star.arg_types):  # pragma: no cover
+    raise ImportError("unsupported sqlglot version: exp.Star lacks except_ or replace")
 
 
 class ResolveError(Exception):
@@ -239,11 +244,11 @@ def _record_stars(tree: exp.Expr) -> None:
                 star, qualifier = projection.this, projection.table
             else:
                 continue
-            replaced = star.args.get("replace") or []
+            replaced = star.args.get(_STAR_REPLACE) or []
             stars.append(
                 StarUse(
                     qualifier,
-                    tuple(star.args.get("except_") or ()),
+                    tuple(star.args.get(_STAR_EXCEPT) or ()),
                     tuple(r.args["alias"] for r in replaced if isinstance(r, exp.Alias)),
                 )
             )

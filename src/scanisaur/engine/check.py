@@ -22,10 +22,6 @@ from scanisaur.engine.resolve import ResolveError, resolve
 from scanisaur.engine.result import CheckResult, Finding, Severity, verdict_for
 from scanisaur.engine.rules import UNANALYZABLE, WRITE_STATEMENT
 
-#: Writes whose names are checked when the policy allows writes: the query they run,
-#: and an INSERT's target. Names in other writes (UPDATE, MERGE, ...) aren't checked yet.
-_CHECKED_WRITES = (exp.Insert, exp.Create, exp.Export)
-
 #: Fixes for SQL that can't be analyzed.
 _SEND_ONE = "Send one complete SQL query."
 _BY_HAND = "Check the table and column names by hand before running it."
@@ -89,11 +85,12 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy) -> tuple[list[Finding],
     if kind == "other":
         message = f"{describe(tree)} statements can't be checked."
         return [_unanalyzable(policy, message, _SEND_ONE)], ()
-    if kind == "write" and not isinstance(tree, _CHECKED_WRITES):
+    target = resolvable(tree)
+    if target is None:
         message = f"Names in {describe(tree)} statements aren't checked yet."
         return [_unanalyzable(policy, message, _BY_HAND)], ()
     try:
-        resolution = resolve(resolvable(tree), catalog, DIALECT)
+        resolution = resolve(target, catalog, DIALECT)
     except ResolveError as error:
         message = f"Names could not be resolved: {error}."
         return [_unanalyzable(policy, message, _BY_HAND)], ()

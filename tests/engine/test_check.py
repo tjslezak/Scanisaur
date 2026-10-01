@@ -44,6 +44,11 @@ class TestCheck:
         assert result.tag == "/* scanisaur:chk_test */"
         assert result.schema_version == 1
 
+    def test_query_in_parentheses(self) -> None:
+        result = check("(SELECT user_id FROM events)", CATALOG)
+        assert result.verdict is Verdict.PASS
+        assert result.tables == ("proj.analytics.events",)
+
     def test_generates_a_check_id(self) -> None:
         result = check("SELECT 1", CATALOG)
         assert CHECK_ID.match(result.check_id)
