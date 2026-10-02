@@ -54,7 +54,7 @@ Measured in the sandbox on a dataset of 1,000 empty, day-partitioned tables, as 
 
 ## Permissions for the project-wide views
 
-The project-wide (`region-us`) views were denied to a user holding only the basic `roles/owner` role, with `User does not have the required permissions ('bigquery.tables.list' permission(s) at the dataset level …)`. The catalog account, which holds `roles/bigquery.metadataViewer` on the project, read them. The same owner could read per-dataset views and `__TABLES__`. So Scanisaur's service account needs a BigQuery role granted on the project, not a basic role, and `scanisaur doctor` should test a project-wide query. Granting the owner `metadataViewer` and rerunning would confirm that the basic role is the cause.
+The project-wide (`region-us`) views were denied to a user holding only the basic `roles/owner` role, with `User does not have the required permissions ('bigquery.tables.list' permission(s) at the dataset level …)`. The catalog account, which holds `roles/bigquery.metadataViewer` on the project, read them. The same owner could read per-dataset views and `__TABLES__`. After `roles/bigquery.metadataViewer` was granted on the project, the same owner read both views. So the basic role was the cause: Scanisaur's service account needs a BigQuery role granted on the project, not a basic role, and `scanisaur doctor` should test a project-wide query.
 
 ## On-demand price
 
