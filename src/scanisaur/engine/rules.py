@@ -10,3 +10,5 @@ WRITE_STATEMENT = "SCN002"
 PARTITION_FILTER = "SCN003"
 #: A function around a partition or cluster column that stops BigQuery from skipping data.
 PRUNING_DEFEATED = "SCN004"
+#: A filter on a later cluster column with none on the leading one, so clustering helps little.
+CLUSTER_PREFIX = "SCN011"

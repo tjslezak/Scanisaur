@@ -1,4 +1,4 @@
-"""SCN003 and SCN004: filters that let BigQuery skip partitions, shards and clustered blocks.
+"""SCN003, SCN004 and SCN011: filters that let BigQuery skip partitions, shards and blocks.
 
 Which conditions prune was measured with dry runs on public tables (``docs/rules/``).
 BigQuery prunes through ranges, ``IN`` lists, ``IS NULL`` and ``OR``s of them, and through
@@ -22,10 +22,12 @@ from scanisaur.catalog.model import PARTITIONDATE, PARTITIONTIME, TABLE_SUFFIX, 
 from scanisaur.engine.facts import Predicate, QueryFacts, TableFacts
 from scanisaur.engine.parse import DIALECT
 from scanisaur.engine.result import Finding, Severity
-from scanisaur.engine.rules import PARTITION_FILTER, PRUNING_DEFEATED
+from scanisaur.engine.rules import CLUSTER_PREFIX, PARTITION_FILTER, PRUNING_DEFEATED
 
 #: Returns the name of a function that stops pruning, given a node and its column's type.
 Defeating = Callable[[exp.Expr, str], str | None]
+#: A table's filter conditions, each parsed once.
+Parsed = list[tuple[Predicate, exp.Expr]]
 #: Which LIKE patterns limit what is read: none, any constant, or only a fixed prefix.
 LikeMode = Literal["none", "any", "prefix"]
 
@@ -56,7 +58,7 @@ _FULL_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def pruning_findings(facts: QueryFacts) -> list[Finding]:
-    """SCN003 and SCN004 findings for every table the query reads.
+    """SCN003, SCN004 and SCN011 findings for every table the query reads.
 
     A problem found at several references, such as two unfiltered UNION branches, is
     reported once, at the first.
@@ -71,14 +73,16 @@ def pruning_findings(facts: QueryFacts) -> list[Finding]:
 
 def _table_findings(facts: TableFacts) -> Iterator[Finding]:
     table = facts.table
+    parsed = [(p, tree) for p in facts.predicates if (tree := _parse(p.sql)) is not None]
     if table.is_wildcard:
-        yield from _shards(facts)
+        yield from _shards(facts, parsed)
     elif table.partitioning is not None:
-        yield from _partitions(facts)
-    yield from _clustering(facts)
+        yield from _partitions(facts, parsed)
+    yield from _clustering(facts, parsed)
+    yield from _cluster_prefix(facts, parsed)
 
 
-def _partitions(facts: TableFacts) -> Iterator[Finding]:
+def _partitions(facts: TableFacts, parsed: Parsed) -> Iterator[Finding]:
     table = facts.table
     partitioning = table.partitioning
     assert partitioning is not None
@@ -86,7 +90,7 @@ def _partitions(facts: TableFacts) -> Iterator[Finding]:
     if not required and not _reads_data(facts):
         return  # e.g. COUNT(*): BigQuery answers from metadata and reads nothing
     names = _partition_names(table)
-    relevant = _conditions(facts, names)
+    relevant = _conditions(parsed, names)
     if any(_limits(tree, names, table, "none", _partition_defeating) for _p, tree in relevant):
         return
     defeated = next(
@@ -130,14 +134,14 @@ def _partitions(facts: TableFacts) -> Iterator[Finding]:
     yield Finding(rule=rule, severity=severity, message=message, fix=fix, line=line, column=column)
 
 
-def _shards(facts: TableFacts) -> Iterator[Finding]:
+def _shards(facts: TableFacts, parsed: Parsed) -> Iterator[Finding]:
     table = facts.table
     if facts.name and len(facts.name) > len(table.name):
         return  # a narrower wildcard such as events_2026* already limits the shards
     if not _reads_data(facts):
         return  # e.g. DISTINCT _TABLE_SUFFIX reads only shard names
     names = frozenset({TABLE_SUFFIX.lower()})
-    relevant = _conditions(facts, names)
+    relevant = _conditions(parsed, names)
     # BigQuery checks any constant filter on _TABLE_SUFFIX against the shard names, wrapped
     # or not: PARSE_DATE, CAST, SUBSTR and LIKE were measured.
     if any(_limits(tree, names, table, "any", None) for _p, tree in relevant):
@@ -164,12 +168,12 @@ def _shards(facts: TableFacts) -> Iterator[Finding]:
     )
 
 
-def _clustering(facts: TableFacts) -> Iterator[Finding]:
+def _clustering(facts: TableFacts, parsed: Parsed) -> Iterator[Finding]:
     table = facts.table
     for name in table.clustering:
         names = frozenset({name.lower()})
-        relevant = _conditions(facts, names)
-        if any(_limits(tree, names, table, "prefix", _cluster_defeating) for _p, tree in relevant):
+        relevant = _conditions(parsed, names)
+        if _filtered(relevant, names, table, _cluster_defeating):
             continue  # a filter on the column already uses the clustering
         for _predicate, tree in relevant:
             if not _limits(tree, names, table, "prefix", None):
@@ -196,18 +200,131 @@ def _clustering(facts: TableFacts) -> Iterator[Finding]:
             break
 
 
-def _conditions(facts: TableFacts, names: frozenset[str]) -> list[tuple[Predicate, exp.Expr]]:
-    """The table's filter conditions that mention ``names``, parsed. A fact records only
-    the first column a condition names, so the condition itself is searched. QUALIFY runs
-    too late to prune."""
-    found = []
-    for predicate in facts.predicates:
-        if predicate.clause == "qualify":
+def _cluster_prefix(facts: TableFacts, parsed: Parsed) -> Iterator[Finding]:
+    """SCN011: a filter on a later cluster column with none on the leading one.
+
+    BigQuery sorts clustered data by the cluster columns in order, so without the leading
+    column a filter on a later one may skip far fewer blocks: one pageviews day read 6.68 GB
+    with `title` alone against 810 MB with `wiki` too. Both measured cases also changed the
+    answer, because the result then covered every value of the leading column.
+    """
+    table = facts.table
+    if len(table.clustering) < 2:
+        return
+    leading = table.clustering[0]
+    lead = frozenset({leading.lower()})
+    partition = table.partitioning.column if table.partitioning is not None else None
+    if partition is not None and leading.lower() == partition.lower():
+        return  # SCN003 asks for the partition filter
+    # A wrapped filter on the leading column counts: SCN004 reports the function.
+    if _filtered(_conditions(parsed, lead), lead, table, None):
+        return
+    # A join, a subquery, QUALIFY or an unmeasured shape such as `wiki IN UNNEST(@wikis)`
+    # may still pick values of the leading column, and whether BigQuery then skips blocks
+    # isn't known. Only exclusions such as `wiki != 'commons'` surely keep nearly every block.
+    if lead & facts.linked:
+        return
+    on_leading = _conditions(parsed, lead, qualify=True)
+    if on_leading and _column_type(table, leading.lower()) == "BOOL":
+        return  # `active != TRUE` picks the one other value
+    if not all(_excludes(tree, lead) for _p, tree in on_leading):
+        return
+    for name in table.clustering[1:]:
+        if partition is not None and name.lower() == partition.lower():
+            continue  # a filter on it is the partition filter, not a question about one value
+        names = frozenset({name.lower()})
+        if not any(_pins(tree, names) for _p, tree in _conditions(parsed, names)):
             continue
-        tree = _parse(predicate.sql)
-        if tree is not None and any(c.name.lower() in names for c in tree.find_all(exp.Column)):
-            found.append((predicate, tree))
-    return found
+        order = ", then ".join(f"`{column}`" for column in table.clustering)
+        line, column = facts.position
+        yield Finding(
+            rule=CLUSTER_PREFIX,
+            severity=_severity(table),
+            message=(
+                f"`{table.qualified_name}` is clustered by {order}. The query filters "
+                f"`{name}` but doesn't limit `{leading}` to particular values, so BigQuery may "
+                f"skip far fewer blocks than it would with a `{leading}` filter as well."
+            ),
+            fix=(
+                f"If the question is about particular `{leading}` values, "
+                "filter on them with `=` or `IN`."
+            ),
+            line=line,
+            column=column,
+        )
+        return
+
+
+def _pins(node: exp.Expr, names: frozenset[str]) -> bool:
+    """True when the condition confines the column to particular values with `=` or `IN`,
+    the filters measured for SCN011. A range on a later cluster column is usually a time
+    window over every value of the leading one, so it isn't reported, and neither is a
+    function of the column such as `DATE(ts) = ...`, which is a range too. LOWER, UPPER and
+    TRIM keep particular values; SCN004 reports them."""
+    node = node.unnest()
+    if isinstance(node, exp.Or):
+        return all(_pins(child, names) for child in node.flatten())
+    if isinstance(node, exp.And):
+        return any(_pins(child, names) for child in node.flatten())
+    if isinstance(node, exp.EQ):
+        pairs = ((node.left, node.right), (node.right, node.left))
+        return any(_plain(side, names) and _constant(other) for side, other in pairs)
+    if isinstance(node, exp.In):
+        values = _in_values(node)
+        return bool(values) and all(map(_constant, values)) and _plain(node.this, names)
+    return False
+
+
+def _plain(side: exp.Expr, names: frozenset[str]) -> bool:
+    """The column itself, or the column under LOWER, UPPER or TRIM."""
+    side = side.unnest()
+    while isinstance(side, tuple(_CLUSTER_DEFEATS)):
+        side = side.this.unnest()
+    return isinstance(side, exp.Column) and _named(side, names)
+
+
+def _excludes(node: exp.Expr, names: frozenset[str]) -> bool:
+    """True when the condition only rules values out, as `wiki != 'commons'`,
+    `wiki NOT IN (...)`, `wiki NOT LIKE ...` and `wiki IS NOT NULL` do."""
+    node = node.unnest()
+    if isinstance(node, exp.NEQ):
+        for side, other in ((node.left, node.right), (node.right, node.left)):
+            if _only(side, names) and (_constant(other) or isinstance(other, exp.Subquery)):
+                return True
+        return False
+    if isinstance(node, exp.Like) and node.args.get("negate"):  # how sqlglot holds NOT LIKE
+        return _only(node.this, names)
+    tested = node.this.unnest() if isinstance(node, exp.Not) else None
+    if isinstance(tested, exp.Like) and tested.args.get("negate"):
+        return False  # NOT (x NOT LIKE ...) is a LIKE
+    if isinstance(tested, exp.In | exp.Like) or (
+        isinstance(tested, exp.Is) and isinstance(tested.expression, exp.Null)
+    ):
+        return _only(tested.this, names)
+    return False
+
+
+def _conditions(parsed: Parsed, names: frozenset[str], *, qualify: bool = False) -> Parsed:
+    """The conditions that name ``names`` outside a subquery. A fact records only the
+    first column a condition names, so the condition itself is searched. QUALIFY runs
+    too late to prune, so its conditions are left out unless ``qualify`` is set."""
+    return [
+        (predicate, tree)
+        for predicate, tree in parsed
+        if (qualify or predicate.clause != "qualify")
+        and any(
+            _named(column, names) and column.find_ancestor(exp.Query) is None
+            for column in tree.find_all(exp.Column)
+        )
+    ]
+
+
+def _filtered(
+    conditions: Parsed, names: frozenset[str], table: Table, defeating: Defeating | None
+) -> bool:
+    """True when a condition confines the column to values, ranges or a prefix that
+    BigQuery can skip clustered blocks with."""
+    return any(_limits(tree, names, table, "prefix", defeating) for _p, tree in conditions)
 
 
 def _limits(
@@ -240,7 +357,7 @@ def _limits(
         values = _in_values(node)
         if values and all(_constant(value) for value in values):
             side = node.this
-    elif isinstance(node, exp.Like) and _like_limits(node.expression, like):
+    elif isinstance(node, exp.Like) and _like_limits(node, like):
         side = node.this
     if not isinstance(side, exp.Expr) or not _only(side, names):
         return False
@@ -259,7 +376,7 @@ def _first_defeating(
 ) -> str | None:
     """The innermost defeating function around one of ``names``."""
     for column in tree.find_all(exp.Column):
-        if column.name.lower() not in names:
+        if not _named(column, names):
             continue
         column_type = _column_type(table, column.name.lower())
         node = column.parent
@@ -303,7 +420,14 @@ def _only(side: exp.Expr, names: frozenset[str]) -> bool:
     columns = list(side.find_all(exp.Column))
     if not columns or side.find(exp.Query) is not None:
         return False
-    return all(column.name.lower() in names for column in columns)
+    return all(_named(column, names) for column in columns)
+
+
+def _named(column: exp.Column, names: frozenset[str]) -> bool:
+    """True when ``column`` is one of the table's columns ``names``. A parsed condition is
+    qualified by the table's alias, so ``t.meta.status`` is a field of the ``meta`` struct,
+    not the column ``status``."""
+    return column.name.lower() in names and not column.args.get("db")
 
 
 def _constant(node: exp.Expr | None) -> bool:
@@ -326,11 +450,12 @@ def _in_values(node: exp.In) -> list[exp.Expr]:
     return list(node.expressions)
 
 
-def _like_limits(pattern: exp.Expr, like: LikeMode) -> bool:
-    """Whether a LIKE with this pattern limits what is read. Clustering needs a fixed start
-    such as 'req%'; shard names are matched against any constant pattern."""
-    if like == "none" or not _constant(pattern):
-        return False
+def _like_limits(node: exp.Like, like: LikeMode) -> bool:
+    """Whether a LIKE limits what is read. Shard names are matched against any constant
+    pattern; clustering needs a fixed start such as 'req%'. NOT LIKE keeps nearly all."""
+    pattern = node.expression
+    if like == "none" or node.args.get("negate") or not _constant(pattern):
+        return False  # NOT LIKE, like `!=`, rules out a few values
     if like == "any":
         return True
     return isinstance(pattern, exp.Literal) and pattern.is_string and pattern.name[:1] not in "%_"

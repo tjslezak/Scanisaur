@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "warn",
+      "message": "`LOWER(wiki) = 'en'` wraps the cluster column `wiki` in LOWER, so BigQuery can't use the clustering of `proj.web.pageviews` to skip blocks.",
+      "fix": "Compare `wiki` itself, for example `wiki = 'en'`, if the stored values are written that way.",
+      "line": 1,
+      "column": 28
+    }
+  ],
+  "tables": [
+    "proj.web.pageviews"
+  ]
+}

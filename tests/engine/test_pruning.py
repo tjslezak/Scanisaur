@@ -1,4 +1,4 @@
-"""Edge cases for SCN003 and SCN004; tests/golden/scn003 and scn004 cover the main behavior."""
+"""Edge cases for SCN003, SCN004 and SCN011; the golden cases cover the main behavior."""
 
 from pathlib import Path
 
@@ -17,7 +17,12 @@ from scanisaur.engine.facts import (
     facts_from_sql,
 )
 from scanisaur.engine.result import Severity, Verdict
-from scanisaur.engine.rules import PARTITION_FILTER, PRUNING_DEFEATED, UNANALYZABLE
+from scanisaur.engine.rules import (
+    CLUSTER_PREFIX,
+    PARTITION_FILTER,
+    PRUNING_DEFEATED,
+    UNANALYZABLE,
+)
 
 CATALOG = load_catalog(Path(__file__).parents[1] / "golden" / "catalog.yaml")
 
@@ -129,6 +134,15 @@ class TestShards:
         assert findings("SELECT DISTINCT _TABLE_SUFFIX FROM `proj.ga4.events_*`") == []
 
 
+class TestShardExclusions:
+    def test_not_like_on_the_suffix_reads_nearly_every_shard(self) -> None:
+        sql = (
+            "SELECT COUNT(*) FROM ga4.`events_*` "
+            "WHERE _TABLE_SUFFIX NOT LIKE '2019%' AND event_name = 'x'"
+        )
+        assert [rule for rule, _m, _f in findings(sql)] == [PARTITION_FILTER]
+
+
 class TestDefeatedPruning:
     def test_wrapped_column_compared_with_like(self) -> None:
         rule, message, fix = only_finding(
@@ -192,12 +206,384 @@ class TestDefeatedPruning:
         )
         assert findings(sql) == []  # != can't use clustering anyway, so LOWER costs nothing
 
+    def test_not_like_does_not_use_the_clustering(self) -> None:
+        sql = (
+            "SELECT COUNT(*) FROM web.downloads WHERE DATE(timestamp) = '2026-09-28' "
+            "AND LOWER(project) = 'requests' AND project NOT LIKE 'req%'"
+        )
+        assert [rule for rule, _m, _f in findings(sql)] == [PRUNING_DEFEATED]
+
     def test_leading_wildcard_does_not_use_the_clustering(self) -> None:
         sql = (
             "SELECT COUNT(*) FROM web.downloads WHERE DATE(timestamp) = '2026-09-28' "
             "AND LOWER(project) = 'requests' AND project LIKE '%quests'"
         )
         assert [rule for rule, _m, _f in findings(sql)] == [PRUNING_DEFEATED]
+
+
+class TestClusterPrefix:
+    DAY = "DATE(p.datehour) = '2025-06-01'"
+    WIKIS = "wikis AS (SELECT wiki FROM UNNEST(['en', 'de']) AS wiki)"
+    TITLE_ONLY = f"SELECT SUM(views) FROM web.pageviews AS p WHERE {DAY} AND p.title = 'x'"
+
+    def rules(self, sql: str) -> list[str]:
+        return [rule for rule, _m, _f in findings(sql)]
+
+    def test_join_in_where_limits_the_leading_column(self) -> None:
+        sql = (
+            f"WITH {self.WIKIS} SELECT SUM(p.views) FROM web.pageviews AS p, wikis AS w "
+            f"WHERE p.wiki = w.wiki AND {self.DAY} AND p.title = 'x'"
+        )
+        assert self.rules(sql) == []
+
+    def test_join_on_the_leading_column_through_a_cte(self) -> None:
+        sql = (
+            f"WITH {self.WIKIS}, day AS (SELECT wiki, title, views FROM web.pageviews AS p "
+            f"WHERE {self.DAY}) SELECT SUM(d.views) FROM day AS d "
+            "JOIN wikis AS w ON d.wiki = w.wiki WHERE d.title = 'x'"
+        )
+        assert self.rules(sql) == []
+
+    def test_outer_join_on_the_leading_column(self) -> None:
+        # A WHERE filter on w would make it an inner join, so it stays silent either way.
+        sql = (
+            f"WITH {self.WIKIS} SELECT SUM(p.views) FROM web.pageviews AS p "
+            f"LEFT JOIN wikis AS w ON p.wiki = w.wiki WHERE {self.DAY} AND p.title = 'x' "
+            "AND w.wiki = 'en'"
+        )
+        assert self.rules(sql) == []
+
+    def test_correlated_exists_on_the_leading_column(self) -> None:
+        sql = (
+            f"WITH {self.WIKIS} SELECT SUM(p.views) FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x' "
+            "AND EXISTS (SELECT 1 FROM wikis AS w WHERE w.wiki = p.wiki)"
+        )
+        assert self.rules(sql) == []
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "p.wiki IN UNNEST(@wikis)",
+            "STARTS_WITH(p.wiki, 'en')",
+            "p.wiki = (SELECT MAX(region) FROM web.store_sales)",
+            "p.wiki != p.title",
+        ],
+    )
+    def test_leading_filters_that_may_pick_values(self, where: str) -> None:
+        sql = f"{self.TITLE_ONLY} AND {where}"
+        assert self.rules(sql) == []
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "p.wiki NOT IN ('commons', 'meta')",
+            "p.wiki NOT IN (SELECT region FROM web.store_sales)",
+            "p.wiki <> 'commons'",
+            "p.wiki NOT LIKE 'commons%'",
+        ],
+    )
+    def test_leading_filters_that_only_exclude(self, where: str) -> None:
+        sql = f"{self.TITLE_ONLY} AND {where}"
+        assert self.rules(sql) == [CLUSTER_PREFIX]
+
+    def test_leading_column_in_qualify(self) -> None:
+        sql = (
+            "SELECT wiki, views FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x' QUALIFY wiki = 'en'"
+        )
+        assert self.rules(sql) == []
+
+    def test_leading_column_named_inside_an_unrelated_subquery(self) -> None:
+        sql = (
+            f"SELECT SUM(p.views) FROM web.pageviews AS p WHERE {self.DAY} AND p.title = 'x' "
+            "AND p.views > (SELECT AVG(views) FROM web.pageviews "
+            "WHERE wiki = 'en' AND DATE(datehour) = '2025-06-01')"
+        )
+        assert self.rules(sql) == [CLUSTER_PREFIX]
+
+    def test_partition_column_as_a_later_cluster_column(self) -> None:
+        table = Table(
+            "p",
+            "d",
+            "ev",
+            (Column("customer_id", "STRING"), Column("ts", "TIMESTAMP"), Column("n", "INT64")),
+            partitioning=Partitioning("ts", "DAY"),
+            clustering=("customer_id", "ts"),
+        )
+        catalog = Catalog((table,), "p", "d")
+        sql = "SELECT SUM(n) FROM ev WHERE ts = TIMESTAMP '2026-09-28 10:00:00'"
+        assert findings(sql, catalog) == []
+
+    def test_range_on_a_later_column_is_not_reported(self) -> None:
+        sql = self.TITLE_ONLY.replace("p.title = 'x'", "p.title >= 'x'")
+        assert self.rules(sql) == []
+
+    def test_struct_field_named_like_a_cluster_column(self) -> None:
+        table = Table(
+            "p",
+            "d",
+            "st",
+            (
+                Column("customer_id", "STRING"),
+                Column("status", "STRING"),
+                Column("meta", "STRUCT<status STRING, customer_id STRING>"),
+            ),
+            clustering=("customer_id", "status"),
+        )
+        catalog = Catalog((table,), "p", "d")
+        assert findings("SELECT COUNT(*) FROM st AS t WHERE t.meta.status = 'x'", catalog) == []
+        sql = "SELECT COUNT(*) FROM st AS t WHERE t.status = 'x' AND t.meta.customer_id = 'c'"
+        assert [rule for rule, _m, _f in findings(sql, catalog)] == [CLUSTER_PREFIX]
+
+    def test_correlated_exists_through_a_cte_with_a_reused_alias(self) -> None:
+        sql = (
+            "WITH d AS (SELECT p.wiki, p.title, p.views FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x') SELECT SUM(q.views) FROM d AS q "
+            "WHERE EXISTS (SELECT 1 FROM web.store_sales AS p WHERE p.region = q.wiki)"
+        )
+        assert self.rules(sql) == []
+
+    @pytest.mark.parametrize(
+        "cte",
+        [
+            "ROW_NUMBER() OVER (PARTITION BY p.wiki ORDER BY p.views) AS rn",
+            "SUM(p.views) OVER (PARTITION BY p.title) AS total",
+        ],
+    )
+    def test_join_on_a_cte_with_a_window(self, cte: str) -> None:
+        sql = (
+            f"WITH d AS (SELECT p.wiki, p.title, p.views, {cte} FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x') "
+            "SELECT * FROM d JOIN web.store_sales AS w ON d.wiki = w.region"
+        )
+        assert self.rules(sql) == []
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY p.title ORDER BY p.views DESC) <= 3",
+            "LIMIT 100",
+            "ORDER BY p.views DESC LIMIT 10",
+        ],
+    )
+    def test_outer_filter_that_cannot_move_into_the_cte(self, tail: str) -> None:
+        sql = (
+            "WITH r AS (SELECT p.wiki, p.title, p.views FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x' {tail}) SELECT * FROM r WHERE wiki = 'en'"
+        )
+        assert self.rules(sql) == []
+
+    def test_outer_filter_moves_below_a_window_aggregate(self) -> None:
+        sql = (
+            "WITH d AS (SELECT p.datehour, p.wiki, p.title, p.views, "
+            "SUM(p.views) OVER (PARTITION BY p.wiki) AS total FROM web.pageviews AS p "
+            "WHERE p.title = 'x') "
+            "SELECT * FROM d WHERE d.wiki = 'en' AND DATE(d.datehour) = '2025-06-01'"
+        )
+        # The wiki filter moves below the window; the date filter can't.
+        assert self.rules(sql) == [PARTITION_FILTER]
+        sql = sql.replace("PARTITION BY p.wiki", "PARTITION BY p.wiki, DATE(p.datehour)")
+        assert self.rules(sql) == [PARTITION_FILTER]  # only plain columns are matched
+        sql = sql.replace(
+            "PARTITION BY p.wiki, DATE(p.datehour)", "PARTITION BY p.wiki, p.datehour"
+        )
+        assert self.rules(sql) == []
+
+    def test_correlated_exists_in_having(self) -> None:
+        sql = (
+            f"WITH {self.WIKIS} SELECT p.wiki, SUM(p.views) FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x' GROUP BY p.wiki "
+            "HAVING EXISTS (SELECT 1 FROM wikis AS w WHERE w.wiki = p.wiki)"
+        )
+        assert self.rules(sql) == []
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "(p.title = 'x' OR p.title IN ('y', 'z'))",
+            "((p.title = 'x' AND p.views > 1) OR p.title = 'y')",
+        ],
+    )
+    def test_later_column_pinned_through_or(self, title: str) -> None:
+        sql = f"SELECT SUM(views) FROM web.pageviews AS p WHERE {self.DAY} AND {title}"
+        assert self.rules(sql) == [CLUSTER_PREFIX]
+
+    def test_qualify_on_a_cte_column(self) -> None:
+        sql = (
+            "WITH d AS (SELECT p.wiki, p.title, p.views FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x') SELECT * FROM d QUALIFY d.wiki = 'en'"
+        )
+        assert self.rules(sql) == []
+
+    EVENTS = Table(
+        "p",
+        "d",
+        "ev",
+        (
+            Column("event_date", "DATE"),
+            Column("customer_id", "STRING"),
+            Column("event_ts", "TIMESTAMP"),
+            Column("active", "BOOL"),
+            Column("n", "INT64"),
+        ),
+        partitioning=Partitioning("event_date", "DAY"),
+        clustering=("customer_id", "event_ts"),
+    )
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "DATE(event_ts) = '2026-09-01'",
+            "TIMESTAMP_TRUNC(event_ts, HOUR) = TIMESTAMP '2026-09-01 10:00:00'",
+            "EXTRACT(HOUR FROM event_ts) = 3",
+        ],
+    )
+    def test_function_of_a_later_column_is_a_range(self, where: str) -> None:
+        catalog = Catalog((self.EVENTS,), "p", "d")
+        sql = f"SELECT SUM(n) FROM ev WHERE event_date = '2026-09-01' AND {where}"
+        assert findings(sql, catalog) == []
+
+    @pytest.mark.parametrize("title", ["SUBSTR(p.title, 1, 1) = 'P'", "LENGTH(p.title) = 5"])
+    def test_function_of_a_later_string_column(self, title: str) -> None:
+        sql = f"SELECT SUM(views) FROM web.pageviews AS p WHERE {self.DAY} AND {title}"
+        assert self.rules(sql) == []
+
+    def test_partition_column_as_the_leading_cluster_column(self) -> None:
+        table = Table(
+            "p",
+            "d",
+            "ev",
+            (Column("ts", "TIMESTAMP"), Column("customer_id", "STRING"), Column("n", "INT64")),
+            partitioning=Partitioning("ts", "DAY"),
+            clustering=("ts", "customer_id"),
+        )
+        catalog = Catalog((table,), "p", "d")
+        sql = "SELECT SUM(n) FROM ev WHERE customer_id = 'c'"
+        assert [rule for rule, _m, _f in findings(sql, catalog)] == [PARTITION_FILTER]
+
+    def test_bool_leading_column_compared_with_not_equal(self) -> None:
+        table = Table(
+            "p",
+            "d",
+            "acc",
+            (Column("active", "BOOL"), Column("user_id", "STRING")),
+            clustering=("active", "user_id"),
+        )
+        catalog = Catalog((table,), "p", "d")
+        assert findings("SELECT 1 FROM acc WHERE active != TRUE AND user_id = 'u'", catalog) == []
+        sql = "SELECT 1 FROM acc WHERE user_id = 'u'"
+        assert [rule for rule, _m, _f in findings(sql, catalog)] == [CLUSTER_PREFIX]
+
+    def test_filter_on_an_outer_joined_side_that_keeps_nulls(self) -> None:
+        sql = (
+            "SELECT SUM(p.views) FROM web.store_sales AS s LEFT JOIN web.pageviews AS p "
+            f"ON p.views = s.amount AND {self.DAY} AND p.title = 'x' "
+            "WHERE (p.wiki = 'en' OR p.wiki IS NULL)"
+        )
+        assert self.rules(sql) == []
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "GROUP BY lw HAVING lw = 'en'",
+            "GROUP BY ROLLUP(lw) HAVING lw = 'en'",
+            "GROUP BY lw HAVING lw = 'en' OR SUM(p.views) > 10",
+        ],
+    )
+    def test_having_on_the_leading_column(self, tail: str) -> None:
+        sql = (
+            "SELECT p.wiki AS lw, SUM(p.views) FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x' {tail}"
+        )
+        assert self.rules(sql) == []
+
+    def test_intersect_on_the_leading_column(self) -> None:
+        sql = (
+            f"WITH {self.WIKIS} SELECT wiki, title FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND title = 'x' INTERSECT DISTINCT SELECT wiki, 'x' FROM wikis"
+        )
+        assert self.rules(sql) == []
+
+    def test_correlated_subquery_in_a_cte_column(self) -> None:
+        sql = (
+            f"WITH {self.WIKIS}, d AS (SELECT p.title, p.views, "
+            "(SELECT COUNT(*) FROM wikis AS w WHERE w.wiki = p.wiki) AS known "
+            f"FROM web.pageviews AS p WHERE {self.DAY} AND p.title = 'x') "
+            "SELECT SUM(views) FROM d WHERE known > 0"
+        )
+        assert self.rules(sql) == []
+
+    def test_double_negated_like(self) -> None:
+        assert self.rules(f"{self.TITLE_ONLY} AND NOT (p.wiki NOT LIKE 'en%')") == []
+
+    def test_filter_on_an_outer_joined_side_with_ifnull(self) -> None:
+        sql = (
+            "SELECT SUM(p.views) FROM web.store_sales AS s "
+            "LEFT JOIN web.pageviews AS p ON p.views = s.amount "
+            f"WHERE {self.DAY} AND p.title = 'x' AND p.wiki = IFNULL(@wiki, 'en')"
+        )
+        assert self.rules(sql) == []
+
+    def test_outer_alias_matching_an_inner_alias(self) -> None:
+        sql = (
+            "WITH d AS (SELECT p.wiki, p.title, p.views FROM web.pageviews AS p "
+            f"WHERE {self.DAY} AND p.title = 'x') SELECT * FROM d AS q "
+            "JOIN (SELECT region AS wiki FROM web.store_sales) AS p ON q.title = p.wiki"
+        )
+        assert self.rules(sql) == [CLUSTER_PREFIX]
+
+    def test_deep_self_joined_ctes_stay_analyzable(self) -> None:
+        ctes = [
+            "c0 AS (SELECT wiki, title, views FROM web.pageviews WHERE "
+            "DATE(datehour) = '2025-06-01')"
+        ]
+        for i in range(1, 25):
+            ctes.append(
+                f"c{i} AS (SELECT a.wiki, a.title, a.views FROM c{i - 1} AS a "
+                f"JOIN c{i - 1} AS b ON a.wiki = b.wiki)"
+            )
+        sql = f"WITH {', '.join(ctes)} SELECT COUNT(*) FROM c24 WHERE title = 'x'"
+        assert self.rules(sql) == []
+
+    def test_self_join_on_the_leading_column(self) -> None:
+        # Each side could limit the other, so neither is reported.
+        sql = (
+            "SELECT a.views, b.views FROM web.pageviews AS a JOIN web.pageviews AS b "
+            "ON a.wiki = b.wiki WHERE DATE(a.datehour) = '2025-06-01' "
+            "AND DATE(b.datehour) = '2025-06-01' AND a.title = 'x' AND b.title = 'y'"
+        )
+        assert self.rules(sql) == []
+
+    def test_leading_column_compared_with_a_scalar_subquery(self) -> None:
+        sql = (
+            f"SELECT SUM(views) FROM web.pageviews AS p WHERE {self.DAY} AND p.title = 'x' "
+            "AND p.wiki = (SELECT MAX(region) FROM web.store_sales)"
+        )
+        assert self.rules(sql) == []
+
+    def test_reported_once_for_the_branch_without_the_leading_column(self) -> None:
+        with_wiki = f"SELECT views FROM web.pageviews AS p WHERE {self.DAY} AND wiki = 'en'"
+        without = f"SELECT views FROM web.pageviews AS p WHERE {self.DAY}"
+        sql = (
+            f"{with_wiki} AND title = 'x' UNION ALL {without} AND title = 'x' "
+            f"UNION ALL {without} AND title = 'y'"
+        )
+        (finding,) = check(sql, CATALOG).findings
+        assert finding.rule == CLUSTER_PREFIX
+        assert finding.column == sql.index("pageviews", len(with_wiki)) + 1
+
+    def test_first_filtered_later_column_is_named(self) -> None:
+        sql = (
+            "SELECT licenses FROM web.packages WHERE DATE(snapshot_at) = '2026-09-28' "
+            "AND version = '1.0.0' AND name = 'requests'"
+        )
+        (_rule, message, _fix) = only_finding(sql)
+        assert "The query filters `name` but doesn't limit `system`" in message
+
+    def test_filter_that_does_not_limit_the_later_column(self) -> None:
+        sql = f"SELECT SUM(views) FROM web.pageviews AS p WHERE {self.DAY} AND title != 'x'"
+        assert self.rules(sql) == []
 
 
 class TestCheckIntegration:
@@ -211,7 +597,7 @@ class TestCheckIntegration:
         self.raise_too_complex(monkeypatch)
         (finding,) = check("SELECT user_id FROM events", CATALOG).findings
         assert (finding.rule, finding.severity) == (UNANALYZABLE, Severity.WARN)
-        assert finding.message.startswith("Partition filters weren't checked:")
+        assert finding.message.startswith("Partition and cluster filters weren't checked:")
 
     def test_too_complex_without_partitioned_tables(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.raise_too_complex(monkeypatch)
