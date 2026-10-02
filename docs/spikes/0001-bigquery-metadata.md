@@ -75,6 +75,6 @@ The Cloud Billing catalog lists BigQuery analysis at **$6.25 per TiB** in the US
 
 Don't query `PARTITIONS` in bulk. Use `numPartitions` from `tables.get`, fetched when the estimator first needs it. Read `PARTITIONS` for one table only when a rule needs per-partition sizes.
 
-At 100,000 tables, full syncs should take seconds to minutes rather than the 12 minutes `tables.get` alone would take. That figure is an estimate; a spike on a larger catalog should measure it. For updates within seconds of a change, BigQuery's audit-log events (table created, updated or deleted) can drive the incremental sync.
+Checks read the cached catalog, so a sync never delays a check; sync time only decides how fresh the metadata is. At 100,000 tables, full syncs should take seconds to minutes rather than the 12 minutes `tables.get` alone would take. That figure is an estimate. A sandbox can't reproduce a real warehouse's churn and access patterns, so measure it on a design partner's warehouse. For updates within seconds of a change, BigQuery's audit-log events (table created, updated or deleted) can drive the incremental sync.
 
 This approach needs `roles/bigquery.metadataViewer` and `roles/bigquery.jobUser`, both granted on the project. The spike's catalog account also held `roles/bigquery.resourceViewer`, so confirm with an account that has just those two roles. See [spike 0003](0003-permissions.md).
