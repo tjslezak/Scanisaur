@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "findings": [],
+  "tables": [
+    "proj.web.trends"
+  ],
+  "estimate": {
+    "bytes_low": 106954752,
+    "bytes_high": 106954752,
+    "confidence": "medium",
+    "usd_low": 0.0006,
+    "usd_high": 0.0006
+  }
+}

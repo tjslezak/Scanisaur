@@ -380,7 +380,7 @@ class _Walk:
         for child in [*scope.subquery_scopes, *scope.udtf_scopes]:
             # BigQuery drops output columns nobody reads, with any subquery inside them.
             if not any(_within(child.expression, projection) for projection in reads.unused):
-                self._schedule(child, None, (), runs)
+                self._schedule(child, _needed_by(child), (), runs)
 
     def _sources(self, scope: Scope) -> _Sources:
         """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
@@ -509,6 +509,17 @@ def _named_in(clause: exp.Expr | None, names: set[str]) -> frozenset[str]:
         for c in find_all_in_scope(clause, exp.Column)
         if not c.table and c.name.lower() in names
     )
+
+
+def _needed_by(child: Scope) -> frozenset[str] | None:
+    """The output columns of a subquery that its reader uses: none for ``EXISTS``, which
+    only asks whether a row exists, so ``EXISTS (SELECT * ...)`` reads only what its own
+    conditions use; all of them otherwise."""
+    query = child.expression
+    parent = query.parent
+    while isinstance(parent, exp.Subquery):
+        parent = parent.parent
+    return frozenset() if isinstance(parent, exp.Exists) else None
 
 
 def _within(node: exp.Expr, ancestor: exp.Expr) -> bool:

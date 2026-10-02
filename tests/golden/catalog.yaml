@@ -117,7 +117,7 @@ tables:
       units: INT64
   - name: proj.web.scores
     rows: 900000000
-    bytes: 40000000000
+    bytes: 14400000000
     partitioning: {column: bucket, granularity: RANGE}
     columns:
       bucket: INT64

@@ -32,6 +32,7 @@ from scanisaur.engine.rules import (
     UNANALYZABLE,
     WRITE_STATEMENT,
 )
+from scanisaur.engine.select_star import select_star_findings
 
 #: Fixes for SQL that can't be analyzed.
 _SEND_ONE = "Send one complete SQL query."
@@ -71,11 +72,12 @@ def check(
 ) -> CheckResult:
     """``now`` evaluates ``CURRENT_DATE()`` and the like in the cost estimate."""
     check_id = check_id or new_check_id()
-    findings, tables, analyzed = _analyze(sql, catalog, policy)
+    now = now or datetime.now(UTC)
+    findings, tables, analyzed = _analyze(sql, catalog, policy, now)
     cost: Estimate | None = None
     if analyzed is not None and not _rejected(findings) and not _unseen_reads(analyzed[0]):
         resolution, facts = analyzed
-        cost = estimate(facts, now or datetime.now(UTC), policy.price_per_tib, _sampled(resolution))
+        cost = estimate(facts, now, policy.price_per_tib, _sampled(resolution))
     return CheckResult(
         check_id=check_id,
         tag=tag_for(sql),
@@ -89,7 +91,7 @@ def check(
 _Analysis = tuple[list[Finding], tuple[Table, ...], tuple[Resolution, QueryFacts] | None]
 
 
-def _analyze(sql: str, catalog: Catalog, policy: Policy) -> _Analysis:
+def _analyze(sql: str, catalog: Catalog, policy: Policy, now: datetime) -> _Analysis:
     try:
         statements = parse(sql, DIALECT)
     except SqlParseError as error:
@@ -127,15 +129,15 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy) -> _Analysis:
         return [_unanalyzable(policy, message, _BY_HAND)], (), None
     if resolution.findings:
         return list(resolution.findings), resolution.tables, None
-    findings, facts = _rule_findings(resolution, policy)
+    findings, facts = _rule_findings(resolution, policy, now)
     return findings, resolution.tables, None if facts is None else (resolution, facts)
 
 
 def _rule_findings(
-    resolution: Resolution, policy: Policy
+    resolution: Resolution, policy: Policy, now: datetime
 ) -> tuple[list[Finding], QueryFacts | None]:
-    """Findings from the rules that read per-table facts (SCN003, SCN004, SCN011), and the
-    facts for the cost estimate."""
+    """Findings from the rules that read per-table facts (SCN003 to SCN005, SCN011), and
+    the facts for the cost estimate."""
     try:
         facts = extract(resolution)
     except TooComplexError as error:
@@ -145,7 +147,12 @@ def _rule_findings(
         return [_unanalyzable(policy, message, "Check those filters by hand.")], None
     except FactsError:
         return [], None  # nothing is read, e.g. CREATE TABLE without a query
-    return pruning_findings(facts), facts
+    pruning = pruning_findings(facts)
+    star = select_star_findings(
+        facts, now, sampled=_sampled(resolution), rejected=_rejected(pruning)
+    )
+    findings = sorted([*pruning, *star], key=lambda f: (f.line or 0, f.column or 0, f.rule))
+    return findings, facts
 
 
 def _rejected(findings: list[Finding]) -> bool:
