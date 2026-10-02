@@ -41,10 +41,12 @@ $ echo "SELECT usr_id FROM events WHERE event_date = '2026-09-01'" \
 block: 1 finding · reads proj.analytics.events
   1:8     SCN001  block  Column `usr_id` does not exist in `proj.analytics.events`.
                   fix:   Did you mean `user_id`?
-tag: /* scanisaur:chk_01m3wk05rsjdxrp063 */
+tag: /* scanisaur:q_6bg128p0yte0vj6h18d4 */
 ```
 
 It exits with 0 when the query may run, 1 when it's blocked (or warned, with `--strict`), and 2 on a usage or input error. Add `--json` for the full result.
+
+The agent adds the tag at the start or end of the SQL it runs, so the query can be found in BigQuery's job history. The tag comes from the SQL itself: the same query always gets the same tag, so repeated queries can still be served from BigQuery's cache.
 
 ## License
 

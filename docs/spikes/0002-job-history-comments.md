@@ -10,13 +10,15 @@ Does the tracking tag `/* scanisaur:chk_<id> */` survive into `region-<location>
 
 ## Answer
 
-Yes, on every path tested, whether the tag leads or trails the query. Matching checks to executed queries can rely on the tag, so the fallback (fingerprint plus a time window) isn't needed.
+Yes, on every path tested, whether the tag leads or trails the query. Matching checks to executed queries can rely on the tag. Since issue #13 the tag is itself a fingerprint of the query, so matching also uses time (see the update below).
 
 | Path | Leading tag kept | Trailing tag kept | Labels on the job |
 | --- | --- | --- | --- |
 | `bq` CLI | Yes | Yes | Only the caller's |
 | Python client (`google-cloud-bigquery`) | Yes | Yes | Only the caller's |
 | Google's BigQuery MCP server (`execute_sql`) | Yes | Yes | `goog-mcp-server=true`, plus the caller's |
+
+> **Update (issue [#13](https://github.com/tjslezak/Scanisaur/issues/13)):** the tag is now `/* scanisaur:q_<fingerprint> */`, a hash of the SQL's exact text without tracking tags at its start or end. The same query always gets the same tag. A tag unique to each check made every repeated query miss BigQuery's cache: the same query with a different comment was billed in full each time, and an identical one was free. A tag now identifies the query rather than one check, and anyone can compute it, so it doesn't prove a check happened. `scanisaur audit` matches each run's tag against Scanisaur's record of checks and uses the latest check before the run; a run with no recent check counts as unchecked.
 
 ## Details
 

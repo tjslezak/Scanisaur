@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -29,6 +31,11 @@ _BY_HAND = "Check the table and column names by hand before running it."
 #: Crockford base32, lowercase: sortable and unambiguous to read aloud.
 _ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 _RANDOM_BITS = 40
+#: 100 bits: collisions are negligible for any one project's query history.
+_FINGERPRINT_DIGITS = 20
+#: A tracking tag at the start or end of the SQL, where agents add it.
+_LEADING_TAG = re.compile(r"\A\s*/\*\s*scanisaur:[0-9a-z_]+\s*\*/")
+_TRAILING_TAG = re.compile(r"/\*\s*scanisaur:[0-9a-z_]+\s*\*/\s*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +60,7 @@ def check(
     findings, tables = _analyze(sql, catalog, policy)
     return CheckResult(
         check_id=check_id,
-        tag=tag_for(check_id),
+        tag=tag_for(sql),
         verdict=verdict_for(findings),
         findings=tuple(findings),
         tables=tuple(table.qualified_name for table in tables),
@@ -129,14 +136,45 @@ def new_check_id(now_ms: int | None = None, randomness: int | None = None) -> st
     """A time-sortable ID: 48 bits of milliseconds and 40 random bits, in base32."""
     millis = time.time_ns() // 1_000_000 if now_ms is None else now_ms
     random = secrets.randbits(_RANDOM_BITS) if randomness is None else randomness
-    value = (millis << _RANDOM_BITS) | random
-    digits = []
-    for _ in range(18):  # 88 bits in 5-bit digits, fixed width so IDs sort by time
+    # 88 bits in 18 digits, fixed width so IDs sort by time.
+    return "chk_" + _base32((millis << _RANDOM_BITS) | random, 18)
+
+
+def fingerprint(sql: str) -> str:
+    """Identify a query by its exact text.
+
+    Tracking tags at the start or end, and the whitespace around the query, are left out,
+    so re-checking tagged SQL gives the same fingerprint. Any other change counts, comments
+    included: BigQuery serves cached results only for identical text, and a comment such as
+    ``#legacySQL`` can change what the query means.
+    """
+    text = sql
+    while True:  # an agent may have added more than one tag
+        untagged = _TRAILING_TAG.sub("", _LEADING_TAG.sub("", text))
+        if untagged == text:
+            break
+        text = untagged
+    # surrogatepass: SQL decoded from JSON can hold an unpaired surrogate.
+    data = text.strip().encode("utf-8", "surrogatepass")
+    digest = int.from_bytes(hashlib.sha256(data).digest(), "big")
+    return "q_" + _base32(digest >> (256 - 5 * _FINGERPRINT_DIGITS), _FINGERPRINT_DIGITS)
+
+
+def tag_for(sql: str) -> str:
+    """The SQL comment an agent adds at the start or end of the query it runs.
+
+    It depends only on the SQL, so a repeated query keeps the same text and BigQuery can
+    serve it from its cache; a tag unique to each check would make every run a cache miss.
+    It identifies the query, not one check, and doesn't prove a check happened: audit
+    matches it against Scanisaur's record of checks and their times.
+    """
+    return f"/* scanisaur:{fingerprint(sql)} */"
+
+
+def _base32(value: int, digits: int) -> str:
+    """The lowest ``5 * digits`` bits of ``value``, most significant digit first."""
+    out = []
+    for _ in range(digits):
         value, digit = divmod(value, 32)
-        digits.append(_ALPHABET[digit])
-    return "chk_" + "".join(reversed(digits))
-
-
-def tag_for(check_id: str) -> str:
-    """The SQL comment an agent adds to the executed query."""
-    return f"/* scanisaur:{check_id} */"
+        out.append(_ALPHABET[digit])
+    return "".join(reversed(out))

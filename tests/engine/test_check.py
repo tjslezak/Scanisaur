@@ -6,13 +6,14 @@ import pytest
 from scanisaur.catalog import Catalog, Column, Partitioning, Table
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.engine import check as check_module
-from scanisaur.engine.check import Policy, check, new_check_id, tag_for
+from scanisaur.engine.check import Policy, check, fingerprint, new_check_id, tag_for
 from scanisaur.engine.resolve import ResolveError
 from scanisaur.engine.result import Severity, Verdict
 from scanisaur.engine.rules import UNANALYZABLE, UNKNOWN_IDENTIFIER, WRITE_STATEMENT
 
 CATALOG = load_catalog(Path(__file__).parents[1] / "golden" / "catalog.yaml")
 CHECK_ID = re.compile(r"^chk_[0-9a-hjkmnp-tv-z]{18}$")
+FINGERPRINT = re.compile(r"^q_[0-9a-hjkmnp-tv-z]{20}$")
 
 
 class TestCheckId:
@@ -30,8 +31,48 @@ class TestCheckId:
     def test_deterministic_for_the_same_inputs(self) -> None:
         assert new_check_id(now_ms=5, randomness=7) == new_check_id(now_ms=5, randomness=7)
 
-    def test_tag(self) -> None:
-        assert tag_for("chk_abc") == "/* scanisaur:chk_abc */"
+
+class TestTag:
+    SQL = "SELECT user_id FROM events WHERE event_date = '2026-09-01'"
+
+    def test_format(self) -> None:
+        assert FINGERPRINT.match(fingerprint(self.SQL))
+        assert tag_for(self.SQL) == f"/* scanisaur:{fingerprint(self.SQL)} */"
+
+    @pytest.mark.parametrize(
+        "same",
+        [
+            f"  {SQL}\n",
+            f"{SQL} /* scanisaur:q_p9j93wazgxbtjn0zmf45 */",
+            f"/* scanisaur:q_p9j93wazgxbtjn0zmf45 */\n{SQL}",
+            f"/*scanisaur:chk_01m3wk05rsjdxrp063*/ {SQL} /* scanisaur:q_a */ /* scanisaur:q_b */\n",
+        ],
+    )
+    def test_ignores_surrounding_tags_and_whitespace(self, same: str) -> None:
+        assert fingerprint(same) == fingerprint(self.SQL)
+
+    def test_retagging_keeps_the_tag(self) -> None:
+        for sql in (self.SQL, "CALL ds.proc(1)", "BEGIN SELECT 1; END", "SELECT 'unterminated"):
+            assert tag_for(f"{sql} {tag_for(sql)}") == tag_for(sql)
+
+    @pytest.mark.parametrize(
+        ("sql", "other"),
+        [
+            # Each pair runs differently, or misses BigQuery's cache, so the tags differ.
+            ("SELECT  user_id FROM events", "SELECT user_id FROM events"),
+            ("SELECT user_id FROM events -- note", "SELECT user_id FROM events"),
+            ("#legacySQL\nSELECT a FROM [p:d.t]", "SELECT a FROM [p:d.t]"),
+            (r"SELECT 'a\x41'", r"SELECT 'a\\x41'"),
+            ("SELECT 'x\x1eVAR\x1fy'", "SELECT 'x' y"),
+            ("SELECT '/* scanisaur:q_x */'", "SELECT ''"),
+            ("SELECT user_id FROM Events", "SELECT user_id FROM events"),
+        ],
+    )
+    def test_any_other_change_counts(self, sql: str, other: str) -> None:
+        assert fingerprint(sql) != fingerprint(other)
+
+    def test_unpaired_surrogate(self) -> None:
+        assert FINGERPRINT.match(fingerprint("SELECT '\ud800'"))
 
 
 class TestCheck:
@@ -41,7 +82,7 @@ class TestCheck:
         assert result.findings == ()
         assert result.tables == ("proj.analytics.events",)
         assert result.check_id == "chk_test"
-        assert result.tag == "/* scanisaur:chk_test */"
+        assert result.tag == tag_for("SELECT user_id FROM events")
         assert result.schema_version == 1
 
     def test_query_in_parentheses(self) -> None:
@@ -52,7 +93,12 @@ class TestCheck:
     def test_generates_a_check_id(self) -> None:
         result = check("SELECT 1", CATALOG)
         assert CHECK_ID.match(result.check_id)
-        assert result.tag == tag_for(result.check_id)
+
+    def test_same_sql_same_tag(self) -> None:
+        # Each check has its own ID, but the tag repeats so BigQuery's cache still works.
+        first, second = (check("SELECT user_id FROM events", CATALOG) for _ in range(2))
+        assert first.check_id != second.check_id
+        assert first.tag == second.tag
 
     def test_block(self) -> None:
         result = check("SELECT nope FROM events", CATALOG)
