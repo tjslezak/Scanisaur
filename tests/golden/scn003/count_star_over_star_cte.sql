@@ -1,0 +1,2 @@
+WITH x AS (SELECT * FROM events)
+SELECT COUNT(*) FROM x

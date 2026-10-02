@@ -46,7 +46,7 @@ def run_check(*args: str, sql: str | None = None) -> Result:
 
 class TestCheckCommand:
     def test_pass_from_stdin(self) -> None:
-        result = run_check(sql="SELECT user_id FROM events")
+        result = run_check(sql="SELECT user_id FROM events WHERE event_date = '2026-09-01'")
         assert result.exit_code == EXIT_OK
         lines = result.stdout.splitlines()
         assert lines[0] == "pass: 0 findings · reads proj.analytics.events"

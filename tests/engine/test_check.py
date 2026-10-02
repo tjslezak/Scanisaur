@@ -77,16 +77,17 @@ class TestTag:
 
 class TestCheck:
     def test_pass(self) -> None:
-        result = check("SELECT user_id FROM events", CATALOG, check_id="chk_test")
+        sql = "SELECT user_id FROM events WHERE event_date = '2026-09-01'"
+        result = check(sql, CATALOG, check_id="chk_test")
         assert result.verdict is Verdict.PASS
         assert result.findings == ()
         assert result.tables == ("proj.analytics.events",)
         assert result.check_id == "chk_test"
-        assert result.tag == tag_for("SELECT user_id FROM events")
+        assert result.tag == tag_for(sql)
         assert result.schema_version == 1
 
     def test_query_in_parentheses(self) -> None:
-        result = check("(SELECT user_id FROM events)", CATALOG)
+        result = check("(SELECT user_id FROM events WHERE event_date = '2026-09-01')", CATALOG)
         assert result.verdict is Verdict.PASS
         assert result.tables == ("proj.analytics.events",)
 
@@ -148,7 +149,8 @@ class TestCheck:
 
     def test_writes_checked_when_allowed(self) -> None:
         result = check(
-            "INSERT INTO users (user_id) SELECT user_id FROM events",
+            "INSERT INTO users (user_id) "
+            "SELECT user_id FROM events WHERE event_date > '2026-09-01'",
             CATALOG,
             policy=Policy(read_only=False),
         )
@@ -180,7 +182,8 @@ class TestCatalogEdges:
             "p", "d", "t", (Column("a", "INT64"),), partitioning=Partitioning(None, "HOUR")
         )
         catalog = Catalog((hourly,), "p", "d")
-        assert check("SELECT a FROM t WHERE _PARTITIONTIME IS NULL", catalog).findings == ()
+        sql = "SELECT a FROM t WHERE _PARTITIONTIME >= TIMESTAMP '2026-09-01'"
+        assert check(sql, catalog).findings == ()
         (finding,) = check("SELECT a FROM t WHERE _PARTITIONDATE IS NULL", catalog).findings
         assert finding.message.startswith("`_PARTITIONDATE` only exists on tables partitioned")
 

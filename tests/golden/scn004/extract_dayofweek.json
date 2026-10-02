@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "warn",
+      "message": "`EXTRACT(DAYOFWEEK FROM refresh_date) = 2` wraps the partition column `refresh_date` in EXTRACT(DAYOFWEEK FROM ...), so BigQuery can't use it to skip partitions of `proj.web.trends`; the query reads every partition (3.2 GB in all).",
+      "fix": "Compare `refresh_date` itself with a constant, for example `refresh_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 22
+    }
+  ],
+  "tables": [
+    "proj.web.trends"
+  ]
+}

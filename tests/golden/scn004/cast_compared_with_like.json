@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "warn",
+      "message": "`CAST(event_date AS STRING) LIKE '2026%'` wraps the partition column `event_date` in CAST(... AS STRING), so BigQuery can't use it to skip partitions of `proj.analytics.events`; the query reads every partition (2.1 TB in all).",
+      "fix": "Compare `event_date` itself with a constant, for example `event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "warn",
+      "message": "`SAFE_CAST(refresh_date AS STRING) = '2026-09-30'` wraps the partition column `refresh_date` in SAFE_CAST(... AS STRING), so BigQuery can't use it to skip partitions of `proj.web.trends`; the query reads every partition (3.2 GB in all).",
+      "fix": "Compare `refresh_date` itself: `refresh_date = '2026-09-30'`.",
+      "line": 1,
+      "column": 22
+    }
+  ],
+  "tables": [
+    "proj.web.trends"
+  ]
+}

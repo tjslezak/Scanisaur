@@ -14,18 +14,18 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, NamedTuple
 
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, find_all_in_scope, traverse_scope
 
 from scanisaur.catalog.model import Catalog, Table
-from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, resolvable
+from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, position, resolvable
 from scanisaur.engine.resolve import Resolution, ResolveError, TableKey, resolve, stars_of
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
-Clause = Literal["where", "on", "qualify"]
+Clause = Literal["where", "on", "having", "qualify"]
 
 _COMPARISONS: dict[type[exp.Expr], ComparisonOp] = {
     exp.EQ: "=",
@@ -60,6 +60,10 @@ _NULL_TOLERANT = (exp.Coalesce, exp.If, exp.Case, exp.Is)
 
 class FactsError(ValueError):
     """The statement can't be described: it doesn't parse, resolve, or read anything."""
+
+
+class TooComplexError(FactsError):
+    """The query reads its CTEs in too many different ways to analyze."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +111,12 @@ class TableFacts:
     #: How many times the table is scanned with these facts; a CTE referenced twice
     #: is scanned twice.
     scans: int
+    #: The table name as the query wrote it. It differs from ``table.name`` when a narrower
+    #: wildcard such as ``events_2026*`` reads part of the ``events_*`` family.
+    name: str = ""
+    #: Where the query reads the table, as (line, column). Not compared, so identical facts
+    #: read from several places still merge, keeping the first place.
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +178,11 @@ class _Item(NamedTuple):
     pushed: tuple[_Pushed, ...]
 
 
+_Sources = tuple[
+    dict[str, Table], dict[str, Scope], dict[str, str], dict[str, tuple[int | None, int | None]]
+]
+
+
 class _Walk:
     """Visits scopes readers first, once per distinct way each one is reached.
 
@@ -198,16 +213,21 @@ class _Walk:
             for item, runs in self._pending.pop(key).values():
                 self._visits += 1
                 if self._visits > self._budget:
-                    raise FactsError("the query reads its CTEs in too many ways to analyze")
+                    raise TooComplexError("the query reads its CTEs in too many ways to analyze")
                 self._visit(scope, item, runs)
 
     def table_facts(self) -> tuple[TableFacts, ...]:
-        """Identical facts from several paths become one entry with their scans added."""
+        """Identical facts from several paths become one entry with their scans added,
+        at the earliest position any of them is written."""
         scans: dict[TableFacts, int] = {}
+        first: dict[TableFacts, TableFacts] = {}
         for facts in self._visited:
             unscanned = replace(facts, scans=0)
             scans[unscanned] = scans.get(unscanned, 0) + facts.scans
-        return tuple(replace(facts, scans=count) for facts, count in scans.items())
+            seen = first.get(unscanned)
+            if seen is None or _sort_key(facts.position) < _sort_key(seen.position):
+                first[unscanned] = facts
+        return tuple(replace(first[facts], scans=count) for facts, count in scans.items())
 
     def _schedule(
         self, scope: Scope, needed: frozenset[str] | None, pushed: Iterable[_Pushed], runs: int
@@ -281,7 +301,7 @@ class _Walk:
             self._schedule(branch, branch_needed, branch_pushed, runs)
 
     def _visit_select(self, scope: Scope, select: exp.Select, item: _Item, runs: int) -> None:
-        tables, derived = self._sources(scope)
+        tables, derived, names, positions = self._sources(scope)
         nullable = _null_supplying(select)
         predicates: dict[str, list[Predicate]] = {alias: [] for alias in tables}
         pushdown: dict[str, list[_Pushed]] = {alias: [] for alias in derived}
@@ -321,6 +341,8 @@ class _Walk:
                     star_except=frozenset(e.name.lower() for s in starred for e in s.excepted),
                     predicates=tuple(predicates[alias]),
                     scans=runs,
+                    name=names[alias],
+                    position=positions[alias],
                 )
             )
         if id(scope) not in self._joined:
@@ -340,18 +362,32 @@ class _Walk:
             if not any(_within(child.expression, projection) for projection in reads.unused):
                 self._schedule(child, None, (), runs)
 
-    def _sources(self, scope: Scope) -> tuple[dict[str, Table], dict[str, Scope]]:
-        """Catalog tables and derived sources (CTEs, subqueries) by alias."""
+    def _sources(self, scope: Scope) -> _Sources:
+        """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
+        and position each table is written with."""
         tables: dict[str, Table] = {}
         derived: dict[str, Scope] = {}
+        names: dict[str, str] = {}
+        positions: dict[str, tuple[int | None, int | None]] = {}
         for alias, (_node, source) in scope.selected_sources.items():
             if isinstance(source, exp.Table):
                 table = self._references.get((source.catalog, source.db, source.name))
                 if table is not None:  # INFORMATION_SCHEMA views and table functions aren't
                     tables[alias] = table
+                    names[alias] = source.name
+                    # A name completed from the catalog's defaults has no position of its
+                    # own; the table name inside it does.
+                    where = position(source)
+                    positions[alias] = where if where[0] is not None else position(source.this)
             elif isinstance(source, Scope) and isinstance(source.expression, exp.Query):
                 derived[alias] = source
-        return tables, derived
+        return tables, derived, names, positions
+
+
+def _sort_key(position: tuple[int | None, int | None]) -> tuple[float, float]:
+    """Order positions as written; an unknown position sorts last."""
+    line, column = position
+    return (line if line is not None else float("inf"), column if column is not None else 0)
 
 
 def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[str]]]:
@@ -363,7 +399,9 @@ def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[st
 
 
 def _conditions(select: exp.Select) -> Iterator[tuple[Clause, exp.Expr, frozenset[str] | None]]:
-    """Each conjunct of WHERE, ON and QUALIFY, with the sources it can filter (None: any)."""
+    """Each conjunct of WHERE, ON, HAVING and QUALIFY, with the sources it can filter
+    (None: any). Only HAVING conditions on grouping columns count: BigQuery applies them
+    before grouping, so they can prune partitions."""
     where = select.args.get("where")
     if where is not None:
         yield from (("where", c, None) for c in _conjuncts(where.this))
@@ -375,9 +413,26 @@ def _conditions(select: exp.Select) -> Iterator[tuple[Clause, exp.Expr, frozense
             "FULL": frozenset(),
         }.get(join.side)
         yield from (("on", c, filtered) for c in _conjuncts(join.args.get("on")))
+    yield from (("having", c, None) for c in _grouping_filters(select))
     qualify = select.args.get("qualify")
     if qualify is not None:
         yield from (("qualify", c, None) for c in _conjuncts(qualify.this))
+
+
+def _grouping_filters(select: exp.Select) -> Iterator[exp.Expr]:
+    """HAVING conjuncts that test only plain GROUP BY columns, without aggregates."""
+    having, group = select.args.get("having"), select.args.get("group")
+    if having is None or group is None:
+        return
+    if any(group.args.get(key) for key in ("rollup", "cube", "grouping_sets")):
+        return  # rolled-up rows add NULL keys the filter also sees
+    keys = {_key(c) for c in group.expressions if isinstance(c, exp.Column)}
+    for condition in _conjuncts(having.this):
+        columns = _local_columns(condition)
+        if not columns or any(_key(c) not in keys for c in columns):
+            continue
+        if condition.find(exp.AggFunc, exp.Window) is None:
+            yield condition
 
 
 def _null_supplying(select: exp.Select) -> frozenset[str]:

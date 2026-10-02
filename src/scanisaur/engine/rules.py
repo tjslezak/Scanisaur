@@ -6,3 +6,7 @@ UNANALYZABLE = "SCN000"
 UNKNOWN_IDENTIFIER = "SCN001"
 #: A write or DDL statement while the policy is read-only.
 WRITE_STATEMENT = "SCN002"
+#: No filter that lets BigQuery skip partitions or shards; blocks when the table requires one.
+PARTITION_FILTER = "SCN003"
+#: A function around a partition or cluster column that stops BigQuery from skipping data.
+PRUNING_DEFEATED = "SCN004"

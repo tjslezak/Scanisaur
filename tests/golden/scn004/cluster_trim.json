@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "warn",
+      "message": "`TRIM(project) = 'requests'` wraps the cluster column `project` in TRIM, so BigQuery can't use the clustering of `proj.web.downloads` to skip blocks.",
+      "fix": "Compare `project` itself, for example `project = 'requests'`, if the stored values are written that way.",
+      "line": 1,
+      "column": 26
+    }
+  ],
+  "tables": [
+    "proj.web.downloads"
+  ]
+}
