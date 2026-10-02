@@ -2,7 +2,7 @@
 
 - **Issue:** [#3](https://github.com/tjslezak/Scanisaur/issues/3)
 - **Date:** 2026-10-01
-- **Status:** Done, except one follow-up check (below)
+- **Status:** Done
 
 ## Question
 
@@ -31,19 +31,11 @@ Tested on a one-row private table, as two service accounts:
 | Dry run | **Denied**, same error as `SELECT` | Allowed: 37 bytes |
 | `testIamPermissions` for `tables.get`, `tables.getData`, `tables.updateData` | `tables.get` | `tables.get`, `tables.getData` |
 | Dry run after moving `dataViewer` from the project to the table's dataset | Not tested | Allowed: 37 bytes |
-| Dry run on another dataset after that move | Not tested | **Allowed, but expected denied.** See the follow-up below |
+| Dry run on another dataset after that move | Not tested | Allowed after 60 seconds; **denied** when rerun later (below) |
 
-## Follow-up
+## IAM changes take minutes
 
-After the planner's project-level `dataViewer` was removed, a dry run on a dataset it should no longer read still validated. The planner holds no role that makes it a project reader, so the likeliest cause is IAM propagation: the test waited 60 seconds, and removing a binding can take several minutes. To settle it, run these after a few minutes. The first should print only `roles/bigquery.jobUser`, and the second should fail with "Access Denied":
-
-```bash
-gcloud projects get-iam-policy PROJECT --flatten=bindings \
-  --filter="bindings.members:scanisaur-planner" --format="value(bindings.role)"
-CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=scanisaur-planner@PROJECT.iam.gserviceaccount.com \
-  bq --project_id=PROJECT query --use_legacy_sql=false --dry_run \
-  'SELECT id FROM PROJECT.spike_many.t_0001'
-```
+Sixty seconds after the planner's project-level `dataViewer` was removed, its dry run on a dataset it should no longer read still validated. Rerun later, the same dry run was denied, `testIamPermissions` on that table returned no permissions, and the planner's only project role was `roles/bigquery.jobUser`. Removing a binding can take several minutes to apply, so `scanisaur doctor` results right after a role change may be out of date. `doctor` should say so when it reports access it doesn't expect.
 
 ## Profiles for `scanisaur init`
 
