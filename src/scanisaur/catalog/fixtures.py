@@ -13,11 +13,14 @@ Example::
         columns:
           event_date: DATE
           user_id: STRING
+        partitions:              # optional: partition ID (or shard suffix) -> bytes
+          "20260930": 7000000000
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Self
 
@@ -33,7 +36,25 @@ from pydantic import (
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from scanisaur.catalog.model import Catalog, Column, Granularity, Partitioning, Table, TableKind
+from scanisaur.catalog.model import (
+    Catalog,
+    Column,
+    Granularity,
+    Partition,
+    Partitioning,
+    Table,
+    TableKind,
+)
+
+#: What BigQuery's partition IDs look like, by granularity.
+_PARTITION_IDS: dict[Granularity, re.Pattern[str]] = {
+    "YEAR": re.compile(r"\d{4}"),
+    "MONTH": re.compile(r"\d{6}"),
+    "DAY": re.compile(r"\d{8}"),
+    "HOUR": re.compile(r"\d{10}"),
+    "RANGE": re.compile(r"-?\d+"),
+}
+_SPECIAL_PARTITIONS = ("__NULL__", "__UNPARTITIONED__")
 
 
 class FixtureError(ValueError):
@@ -59,6 +80,7 @@ class _TableSpec(_Spec):
     clustering: tuple[str, ...] = ()
     description: str = ""
     columns: dict[str, str] = Field(min_length=1)
+    partitions: dict[str, int] = {}
 
     @field_validator("columns")
     @classmethod
@@ -71,6 +93,16 @@ class _TableSpec(_Spec):
                     f"column {name!r} has a type that isn't valid: {type_!r}"
                 ) from error
         return columns
+
+    @field_validator("partitions", mode="before")
+    @classmethod
+    def _quoted_ids(cls, partitions: object) -> object:
+        """YAML reads an unquoted ID as a number, octal or date: 0712 becomes 458."""
+        if isinstance(partitions, dict):
+            unquoted = [pid for pid in partitions if not isinstance(pid, str)]
+            if unquoted:
+                raise ValueError(f"quote partition IDs, such as '20260930': {unquoted}")
+        return partitions
 
     @field_validator("name")
     @classmethod
@@ -88,6 +120,23 @@ class _TableSpec(_Spec):
         unknown = [name for name in referenced if name.lower() not in names]
         if unknown:
             raise ValueError(f"partitioning or clustering names unknown columns: {unknown}")
+        if self.partitions and self.partitioning is None and not self.name.endswith("*"):
+            raise ValueError("only partitioned tables and wildcard families have partitions")
+        if self.partitioning is not None:
+            pattern = _PARTITION_IDS[self.partitioning.granularity]
+            malformed = [
+                pid
+                for pid in self.partitions
+                if pid not in _SPECIAL_PARTITIONS and not pattern.fullmatch(pid)
+            ]
+            if malformed:
+                raise ValueError(
+                    f"partition IDs don't match {self.partitioning.granularity} partitions: "
+                    f"{malformed}"
+                )
+        negative = [pid for pid, size in self.partitions.items() if size < 0]
+        if negative:
+            raise ValueError(f"partitions have negative sizes: {negative}")
         return self
 
     def to_table(self) -> Table:
@@ -107,6 +156,7 @@ class _TableSpec(_Spec):
             partitioning=partitioning,
             clustering=self.clustering,
             description=self.description,
+            partitions=tuple(Partition(pid, size) for pid, size in self.partitions.items()),
         )
 
 

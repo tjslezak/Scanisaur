@@ -5,5 +5,12 @@
   "tables": [
     "proj.analytics.events",
     "proj.analytics.users"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 871366656,
+    "bytes_high": 530661244928,
+    "confidence": "low",
+    "usd_low": 0.005,
+    "usd_high": 3.0165
+  }
 }

@@ -14,5 +14,12 @@
   "tables": [
     "proj.web.store_sales",
     "proj.web.pageviews"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 33554432,
+    "bytes_high": 2045023092736,
+    "confidence": "low",
+    "usd_low": 0.0002,
+    "usd_high": 11.6246
+  }
 }

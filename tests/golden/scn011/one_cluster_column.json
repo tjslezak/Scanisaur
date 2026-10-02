@@ -4,5 +4,12 @@
   "findings": [],
   "tables": [
     "proj.web.downloads"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 1378507468832768,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 7835.9077
+  }
 }

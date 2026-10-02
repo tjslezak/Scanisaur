@@ -4,5 +4,12 @@
   "findings": [],
   "tables": [
     "proj.web.trends"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 1209008128,
+    "bytes_high": 1209008128,
+    "confidence": "medium",
+    "usd_low": 0.0069,
+    "usd_high": 0.0069
+  }
 }

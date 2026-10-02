@@ -13,5 +13,12 @@
   ],
   "tables": [
     "proj.web.scores"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 7200571392,
+    "bytes_high": 7200571392,
+    "confidence": "high",
+    "usd_low": 0.0409,
+    "usd_high": 0.0409
+  }
 }

@@ -4,5 +4,12 @@
   "findings": [],
   "tables": [
     "proj.analytics.events"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 0,
+    "bytes_high": 0,
+    "confidence": "high",
+    "usd_low": 0.0,
+    "usd_high": 0.0
+  }
 }

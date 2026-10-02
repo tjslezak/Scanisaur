@@ -13,5 +13,12 @@
   ],
   "tables": [
     "proj.web.trends"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 1602224128,
+    "bytes_high": 1602224128,
+    "confidence": "medium",
+    "usd_low": 0.0091,
+    "usd_high": 0.0091
+  }
 }

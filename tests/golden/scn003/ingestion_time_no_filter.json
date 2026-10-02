@@ -13,5 +13,12 @@
   ],
   "tables": [
     "proj.raw.ingest"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 60000567296,
+    "bytes_high": 60000567296,
+    "confidence": "medium",
+    "usd_low": 0.3411,
+    "usd_high": 0.3411
+  }
 }
