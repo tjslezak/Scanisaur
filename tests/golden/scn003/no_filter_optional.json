@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.analytics.events` is partitioned by `event_date`, but the query doesn't filter on it, so it reads every partition (2.1 TB in all).",
+      "fix": "Add a filter on `event_date`, for example `event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ]
+}

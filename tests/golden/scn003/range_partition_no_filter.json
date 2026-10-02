@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.web.scores` is partitioned by `bucket`, but the query doesn't filter on it, so it reads every partition (40 GB in all).",
+      "fix": "Add a filter on `bucket`, limiting it to a range of values.",
+      "line": 1,
+      "column": 23
+    }
+  ],
+  "tables": [
+    "proj.web.scores"
+  ]
+}

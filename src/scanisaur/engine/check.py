@@ -12,6 +12,7 @@ from typing import Literal
 from sqlglot import exp
 
 from scanisaur.catalog.model import Catalog, Table
+from scanisaur.engine.facts import FactsError, TooComplexError, extract
 from scanisaur.engine.parse import (
     DIALECT,
     SqlParseError,
@@ -20,7 +21,8 @@ from scanisaur.engine.parse import (
     parse,
     resolvable,
 )
-from scanisaur.engine.resolve import ResolveError, resolve
+from scanisaur.engine.pruning import pruning_findings
+from scanisaur.engine.resolve import Resolution, ResolveError, resolve
 from scanisaur.engine.result import CheckResult, Finding, Severity, verdict_for
 from scanisaur.engine.rules import UNANALYZABLE, WRITE_STATEMENT
 
@@ -101,7 +103,21 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy) -> tuple[list[Finding],
     except ResolveError as error:
         message = f"Names could not be resolved: {error}."
         return [_unanalyzable(policy, message, _BY_HAND)], ()
-    return list(resolution.findings), resolution.tables
+    if resolution.findings:
+        return list(resolution.findings), resolution.tables
+    return _rule_findings(resolution, policy), resolution.tables
+
+
+def _rule_findings(resolution: Resolution, policy: Policy) -> list[Finding]:
+    """Findings from the rules that read per-table facts (SCN003, SCN004)."""
+    try:
+        facts = extract(resolution)
+    except TooComplexError as error:
+        message = f"Partition filters weren't checked: {error}."
+        return [_unanalyzable(policy, message, "Check the partition filters by hand.")]
+    except FactsError:
+        return []  # nothing is read, e.g. CREATE TABLE without a query
+    return pruning_findings(facts)
 
 
 def _writes_blocked(statements: list[exp.Expr]) -> list[Finding]:

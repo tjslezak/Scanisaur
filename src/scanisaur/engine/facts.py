@@ -21,7 +21,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, find_all_in_scope, traverse_scope
 
 from scanisaur.catalog.model import Catalog, Table
-from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, resolvable
+from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, position, resolvable
 from scanisaur.engine.resolve import Resolution, ResolveError, TableKey, resolve, stars_of
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
@@ -60,6 +60,10 @@ _NULL_TOLERANT = (exp.Coalesce, exp.If, exp.Case, exp.Is)
 
 class FactsError(ValueError):
     """The statement can't be described: it doesn't parse, resolve, or read anything."""
+
+
+class TooComplexError(FactsError):
+    """The query reads its CTEs in too many different ways to analyze."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +111,11 @@ class TableFacts:
     #: How many times the table is scanned with these facts; a CTE referenced twice
     #: is scanned twice.
     scans: int
+    #: The table name as the query wrote it. It differs from ``table.name`` when a narrower
+    #: wildcard such as ``events_2026*`` reads part of the ``events_*`` family.
+    name: str = ""
+    #: Where the query reads the table, as (line, column).
+    position: tuple[int | None, int | None] = (None, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +177,11 @@ class _Item(NamedTuple):
     pushed: tuple[_Pushed, ...]
 
 
+_Sources = tuple[
+    dict[str, Table], dict[str, Scope], dict[str, str], dict[str, tuple[int | None, int | None]]
+]
+
+
 class _Walk:
     """Visits scopes readers first, once per distinct way each one is reached.
 
@@ -198,7 +212,7 @@ class _Walk:
             for item, runs in self._pending.pop(key).values():
                 self._visits += 1
                 if self._visits > self._budget:
-                    raise FactsError("the query reads its CTEs in too many ways to analyze")
+                    raise TooComplexError("the query reads its CTEs in too many ways to analyze")
                 self._visit(scope, item, runs)
 
     def table_facts(self) -> tuple[TableFacts, ...]:
@@ -281,7 +295,7 @@ class _Walk:
             self._schedule(branch, branch_needed, branch_pushed, runs)
 
     def _visit_select(self, scope: Scope, select: exp.Select, item: _Item, runs: int) -> None:
-        tables, derived = self._sources(scope)
+        tables, derived, names, positions = self._sources(scope)
         nullable = _null_supplying(select)
         predicates: dict[str, list[Predicate]] = {alias: [] for alias in tables}
         pushdown: dict[str, list[_Pushed]] = {alias: [] for alias in derived}
@@ -321,6 +335,8 @@ class _Walk:
                     star_except=frozenset(e.name.lower() for s in starred for e in s.excepted),
                     predicates=tuple(predicates[alias]),
                     scans=runs,
+                    name=names[alias],
+                    position=positions[alias],
                 )
             )
         if id(scope) not in self._joined:
@@ -340,18 +356,26 @@ class _Walk:
             if not any(_within(child.expression, projection) for projection in reads.unused):
                 self._schedule(child, None, (), runs)
 
-    def _sources(self, scope: Scope) -> tuple[dict[str, Table], dict[str, Scope]]:
-        """Catalog tables and derived sources (CTEs, subqueries) by alias."""
+    def _sources(self, scope: Scope) -> _Sources:
+        """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
+        and position each table is written with."""
         tables: dict[str, Table] = {}
         derived: dict[str, Scope] = {}
+        names: dict[str, str] = {}
+        positions: dict[str, tuple[int | None, int | None]] = {}
         for alias, (_node, source) in scope.selected_sources.items():
             if isinstance(source, exp.Table):
                 table = self._references.get((source.catalog, source.db, source.name))
                 if table is not None:  # INFORMATION_SCHEMA views and table functions aren't
                     tables[alias] = table
+                    names[alias] = source.name
+                    # A name completed from the catalog's defaults has no position of its
+                    # own; the table name inside it does.
+                    where = position(source)
+                    positions[alias] = where if where[0] is not None else position(source.this)
             elif isinstance(source, Scope) and isinstance(source.expression, exp.Query):
                 derived[alias] = source
-        return tables, derived
+        return tables, derived, names, positions
 
 
 def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[str]]]:

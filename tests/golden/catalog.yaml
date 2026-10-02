@@ -43,3 +43,50 @@ tables:
     partitioning: {granularity: DAY}
     columns:
       payload: STRING
+  # Shaped like the benchmark's public tables (issue #10), for SCN003 and SCN004.
+  - name: proj.web.pageviews
+    rows: 70000000000
+    bytes: 2970000000000
+    partitioning: {column: datehour, granularity: DAY, required: true}
+    clustering: [wiki, title]
+    columns:
+      datehour: TIMESTAMP
+      wiki: STRING
+      title: STRING
+      views: INT64
+  - name: proj.web.trends
+    rows: 43974000
+    bytes: 3203450686
+    partitioning: {column: refresh_date, granularity: DAY}
+    columns:
+      refresh_date: DATE
+      week: DATE
+      dma_name: STRING
+      term: STRING
+      score: INT64
+      rank: INT64
+  - name: proj.web.downloads
+    rows: 3506114474210
+    bytes: 1378507468714688
+    partitioning: {column: timestamp, granularity: DAY}
+    clustering: [project]
+    columns:
+      timestamp: TIMESTAMP
+      project: STRING
+      country_code: STRING
+  - name: proj.web.daily_sample
+    rows: 180000
+    bytes: 13500000
+    partitioning: {column: day, granularity: DAY}
+    clustering: [sku]
+    columns:
+      day: DATE
+      sku: STRING
+      units: INT64
+  - name: proj.web.scores
+    rows: 900000000
+    bytes: 40000000000
+    partitioning: {column: bucket, granularity: RANGE}
+    columns:
+      bucket: INT64
+      score: FLOAT64
