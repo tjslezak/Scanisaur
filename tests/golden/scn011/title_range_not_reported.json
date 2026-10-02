@@ -4,5 +4,12 @@
   "findings": [],
   "tables": [
     "proj.web.pageviews"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 1485000671232,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 8.4413
+  }
 }

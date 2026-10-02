@@ -13,5 +13,6 @@
   ],
   "tables": [
     "proj.ga4.events_*"
-  ]
+  ],
+  "estimate": null
 }

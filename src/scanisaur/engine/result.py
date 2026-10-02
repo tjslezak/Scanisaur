@@ -36,6 +36,25 @@ class Finding(BaseModel):
     column: int | None = None
 
 
+Confidence = Literal["high", "medium", "low"]
+
+
+class Estimate(BaseModel):
+    """Bytes the query would be billed for under on-demand pricing, from metadata alone."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bytes_low: int
+    bytes_high: int
+    #: high: sizes and partitions known exactly. medium: column sizes estimated, an
+    #: unknown partition picked by `=`, or clustering that may skip blocks. low: a filter
+    #: whose effect on partitions isn't known.
+    confidence: Confidence
+    #: US dollars at the policy's on-demand price; None for capacity (Editions) pricing.
+    usd_low: float | None = None
+    usd_high: float | None = None
+
+
 class CheckResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -49,6 +68,8 @@ class CheckResult(BaseModel):
     findings: tuple[Finding, ...] = ()
     #: Tables the query reads, as ``project.dataset.table``.
     tables: tuple[str, ...] = ()
+    #: None when the query couldn't be analyzed, or a table it reads has no known size.
+    estimate: Estimate | None = None
 
 
 def verdict_for(findings: tuple[Finding, ...] | list[Finding]) -> Verdict:

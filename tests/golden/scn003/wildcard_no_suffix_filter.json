@@ -13,5 +13,12 @@
   ],
   "tables": [
     "proj.ga4.events_*"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 378600947712,
+    "bytes_high": 378600947712,
+    "confidence": "medium",
+    "usd_low": 2.1521,
+    "usd_high": 2.1521
+  }
 }

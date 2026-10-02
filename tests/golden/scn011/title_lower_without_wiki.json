@@ -21,5 +21,12 @@
   ],
   "tables": [
     "proj.web.pageviews"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 2045000024064,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 11.6245
+  }
 }

@@ -13,5 +13,12 @@
   ],
   "tables": [
     "proj.analytics.events"
-  ]
+  ],
+  "estimate": {
+    "bytes_low": 520200650752,
+    "bytes_high": 520200650752,
+    "confidence": "medium",
+    "usd_low": 2.957,
+    "usd_high": 2.957
+  }
 }

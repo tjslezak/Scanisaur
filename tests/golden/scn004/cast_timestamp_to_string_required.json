@@ -13,5 +13,6 @@
   ],
   "tables": [
     "proj.web.pageviews"
-  ]
+  ],
+  "estimate": null
 }

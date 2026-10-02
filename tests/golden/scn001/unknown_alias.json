@@ -13,5 +13,6 @@
   ],
   "tables": [
     "proj.analytics.events"
-  ]
+  ],
+  "estimate": null
 }

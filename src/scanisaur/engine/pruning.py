@@ -10,6 +10,7 @@ prune, so the rules don't warn on a guess.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Callable, Iterator
 from typing import Literal
@@ -71,9 +72,42 @@ def pruning_findings(facts: QueryFacts) -> list[Finding]:
     return list(unique.values())
 
 
+def parsed_conditions(facts: TableFacts) -> Parsed:
+    """The table's filter conditions, each parsed once; unparsable ones are left out."""
+    return [(p, tree) for p in facts.predicates if (tree := _parse(p.sql)) is not None]
+
+
+def partition_conditions(facts: TableFacts, parsed: Parsed) -> list[exp.Expr]:
+    """Every condition on the partition column, its pseudo-columns, or a wildcard's
+    ``_TABLE_SUFFIX``, whether or not it can prune; QUALIFY runs too late for any."""
+    table = facts.table
+    if table.is_wildcard:
+        return [tree for _p, tree in _conditions(parsed, frozenset({TABLE_SUFFIX.lower()}))]
+    if table.partitioning is None:
+        return []
+    return [tree for _p, tree in _conditions(parsed, partition_names(table))]
+
+
+def defeats_pruning(tree: exp.Expr, table: Table) -> bool:
+    """True when the condition wraps the partition column in a function measured to stop
+    BigQuery from skipping partitions, such as ``CAST(day AS STRING)``."""
+    names = partition_names(table)
+    return _first_defeating(tree, names, table, _partition_defeating) is not None
+
+
+def skips_blocks(facts: TableFacts, parsed: Parsed) -> bool:
+    """True when a filter on a cluster column may let BigQuery skip clustered blocks."""
+    table = facts.table
+    for name in table.clustering:
+        names = frozenset({name.lower()})
+        if _filtered(_conditions(parsed, names), names, table, _cluster_defeating):
+            return True
+    return False
+
+
 def _table_findings(facts: TableFacts) -> Iterator[Finding]:
     table = facts.table
-    parsed = [(p, tree) for p in facts.predicates if (tree := _parse(p.sql)) is not None]
+    parsed = parsed_conditions(facts)
     if table.is_wildcard:
         yield from _shards(facts, parsed)
     elif table.partitioning is not None:
@@ -89,7 +123,7 @@ def _partitions(facts: TableFacts, parsed: Parsed) -> Iterator[Finding]:
     required = partitioning.required
     if not required and not _reads_data(facts):
         return  # e.g. COUNT(*): BigQuery answers from metadata and reads nothing
-    names = _partition_names(table)
+    names = partition_names(table)
     relevant = _conditions(parsed, names)
     if any(_limits(tree, names, table, "none", _partition_defeating) for _p, tree in relevant):
         return
@@ -268,10 +302,10 @@ def _pins(node: exp.Expr, names: frozenset[str]) -> bool:
         return any(_pins(child, names) for child in node.flatten())
     if isinstance(node, exp.EQ):
         pairs = ((node.left, node.right), (node.right, node.left))
-        return any(_plain(side, names) and _constant(other) for side, other in pairs)
+        return any(_plain(side, names) and is_constant(other) for side, other in pairs)
     if isinstance(node, exp.In):
-        values = _in_values(node)
-        return bool(values) and all(map(_constant, values)) and _plain(node.this, names)
+        values = in_values(node)
+        return bool(values) and all(map(is_constant, values)) and _plain(node.this, names)
     return False
 
 
@@ -289,7 +323,7 @@ def _excludes(node: exp.Expr, names: frozenset[str]) -> bool:
     node = node.unnest()
     if isinstance(node, exp.NEQ):
         for side, other in ((node.left, node.right), (node.right, node.left)):
-            if _only(side, names) and (_constant(other) or isinstance(other, exp.Subquery)):
+            if _only(side, names) and (is_constant(other) or isinstance(other, exp.Subquery)):
                 return True
         return False
     if isinstance(node, exp.Like) and node.args.get("negate"):  # how sqlglot holds NOT LIKE
@@ -346,16 +380,16 @@ def _limits(
     if isinstance(node, exp.Is) and isinstance(node.expression, exp.Null):
         side = node.this  # reads only the NULL partition, or the streaming buffer
     elif isinstance(node, _COMPARISONS):
-        if _constant(node.right):
+        if is_constant(node.right):
             side = node.left
-        elif _constant(node.left):
+        elif is_constant(node.left):
             side = node.right
     elif isinstance(node, exp.Between):
-        if _constant(node.args["low"]) and _constant(node.args["high"]):
+        if is_constant(node.args["low"]) and is_constant(node.args["high"]):
             side = node.this
     elif isinstance(node, exp.In):
-        values = _in_values(node)
-        if values and all(_constant(value) for value in values):
+        values = in_values(node)
+        if values and all(is_constant(value) for value in values):
             side = node.this
     elif isinstance(node, exp.Like) and _like_limits(node, like):
         side = node.this
@@ -430,7 +464,9 @@ def _named(column: exp.Column, names: frozenset[str]) -> bool:
     return column.name.lower() in names and not column.args.get("db")
 
 
-def _constant(node: exp.Expr | None) -> bool:
+def is_constant(node: exp.Expr | None) -> bool:
+    """True for a value that reads no column and runs no query, such as a literal,
+    ``CURRENT_DATE()`` or a parameter."""
     return (
         isinstance(node, exp.Expr)
         and node.find(exp.Column) is None
@@ -438,7 +474,8 @@ def _constant(node: exp.Expr | None) -> bool:
     )
 
 
-def _in_values(node: exp.In) -> list[exp.Expr]:
+def in_values(node: exp.In) -> list[exp.Expr]:
+    """The values of ``x IN (...)`` or ``x IN UNNEST([...])``; empty for a subquery."""
     if node.args.get("query") is not None:
         return []
     unnest = node.args.get("unnest")
@@ -454,7 +491,7 @@ def _like_limits(node: exp.Like, like: LikeMode) -> bool:
     """Whether a LIKE limits what is read. Shard names are matched against any constant
     pattern; clustering needs a fixed start such as 'req%'. NOT LIKE keeps nearly all."""
     pattern = node.expression
-    if like == "none" or node.args.get("negate") or not _constant(pattern):
+    if like == "none" or node.args.get("negate") or not is_constant(pattern):
         return False  # NOT LIKE, like `!=`, rules out a few values
     if like == "any":
         return True
@@ -471,7 +508,7 @@ def _reads_data(facts: TableFacts) -> bool:
     return bool(facts.columns - pseudo)
 
 
-def _partition_names(table: Table) -> frozenset[str]:
+def partition_names(table: Table) -> frozenset[str]:
     """Lowercased names a filter can prune this table's partitions with."""
     partitioning = table.partitioning
     assert partitioning is not None
@@ -563,7 +600,10 @@ def _column_type(table: Table, name: str) -> str:
     return column.type.upper().split("<", 1)[0].strip()
 
 
+@functools.lru_cache(maxsize=4096)
 def _parse(sql: str) -> exp.Expr | None:
+    """A predicate, parsed. Cached: the rules and the estimate parse the same ones, and
+    neither changes the trees."""
     try:
         return sqlglot.parse_one(sql, dialect=DIALECT)
     except SqlglotError:
@@ -594,10 +634,14 @@ def _severity(table: Table) -> Severity:
 def _size(table: Table) -> str:
     if table.size_bytes is None:
         return ""
-    value, unit = float(table.size_bytes), "B"
+    return f" ({format_bytes(table.size_bytes)} in all)"
+
+
+def format_bytes(size: int) -> str:
+    """Bytes in decimal units with one decimal place, such as ``2.1 TB``."""
+    value, unit = float(size), "B"
     for larger in ("KB", "MB", "GB", "TB", "PB"):
-        if value < 1000:
+        if round(value, 1) < 1000:
             break
         value, unit = value / 1000, larger
-    shown = f"{value:.1f}".removesuffix(".0")
-    return f" ({shown} {unit} in all)"
+    return f"{value:.1f}".removesuffix(".0") + f" {unit}"

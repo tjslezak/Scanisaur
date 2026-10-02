@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from scanisaur.catalog import Catalog, Column, Partitioning, Table
+from scanisaur.catalog import Catalog, Column, Partition, Partitioning, Table
 from scanisaur.catalog.fixtures import FixtureError, load_catalog
 from scanisaur.catalog.model import PARTITIONDATE, PARTITIONTIME, TABLE_SUFFIX
 
@@ -154,10 +154,38 @@ tables:
         assert table.partitioning == Partitioning(None, "DAY")
         assert PARTITIONTIME in table.pseudo_columns
 
+    def test_partitions(self, tmp_path: Path) -> None:
+        path = write(
+            tmp_path,
+            "tables:\n  - name: p.d.t\n    partitioning: {column: d}\n    columns: {d: DATE}\n"
+            "    partitions: {'20260930': 100, '__NULL__': 5}\n"
+            "  - name: p.d.s_*\n    columns: {a: INT64}\n    partitions: {'2026': 7}\n",
+        )
+        table, shards = load_catalog(path).tables
+        assert table.partitions == (Partition("20260930", 100), Partition("__NULL__", 5))
+        assert shards.partitions == (Partition("2026", 7),)
+
     @pytest.mark.parametrize(
         ("text", "reason"),
         [
             ("tables: [", "while parsing"),
+            (
+                "tables:\n  - {name: p.d.t, columns: {a: INT64}, partitions: {'1': 1}}\n",
+                "only partitioned tables and wildcard families have partitions",
+            ),
+            (
+                "tables:\n  - {name: p.d.t_*, columns: {a: INT64}, partitions: {'1': -1}}\n",
+                "negative sizes: ['1']",
+            ),
+            (
+                "tables:\n  - {name: p.d.t_*, columns: {a: INT64}, partitions: {0712: 1}}\n",
+                "quote partition IDs, such as '20260930': [458]",
+            ),
+            (
+                "tables:\n  - name: p.d.t\n    partitioning: {column: d}\n"
+                "    columns: {d: DATE}\n    partitions: {'2026-09-30': 1}\n",
+                "partition IDs don't match DAY partitions: ['2026-09-30']",
+            ),
             ("[]", "Input should be"),
             ("tables:\n  - name: events\n    columns: {a: INT64}\n", "project.dataset.table"),
             ("tables:\n  - name: p.d.t\n    columns: {}\n", "at least 1"),
