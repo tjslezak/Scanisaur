@@ -47,7 +47,7 @@ CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=scanisaur-planner@PROJECT.iam.gservice
 
 ## Profiles for `scanisaur init`
 
-**Catalog-only (the default).** `metadataViewer` covers the API calls in [spike 0001](0001-bigquery-metadata.md). `jobUser` is needed only for INFORMATION_SCHEMA queries, and `resourceViewer` only for `scanisaur audit` to read job history:
+**Catalog-only (the default).** `metadataViewer` covers the API calls in [spike 0001](0001-bigquery-metadata.md), and must be granted on the project for the project-wide INFORMATION_SCHEMA views; the basic Owner role was denied them. `jobUser` runs the INFORMATION_SCHEMA and `__TABLES__` queries. `resourceViewer` is needed only for `scanisaur audit` to read job history:
 
 ```bash
 SA=scanisaur-catalog@PROJECT.iam.gserviceaccount.com
@@ -83,5 +83,6 @@ For each dataset, `doctor` calls `tables.testIamPermissions` on one table with `
 
 - **Catalog-only mode:** warn if either permission is granted.
 - **Planner mode:** report which datasets grant `getData`, since that is the data the planner can read.
+- **Both modes:** run ``SELECT 1 FROM `region-<location>`.INFORMATION_SCHEMA.COLUMNS LIMIT 1`` to confirm the account can use the project-wide views the sync depends on.
 
 The call is free and reads no data. Dataset-level grants apply to every table in the dataset, so one table per dataset is enough unless table-level grants are in use; then test every table, one call each, like a `tables.get` refresh.
