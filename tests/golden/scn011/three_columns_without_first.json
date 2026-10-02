@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN011",
+      "severity": "warn",
+      "message": "`proj.web.packages` is clustered by `system`, then `name`, then `version`. The query filters `name` but doesn't limit `system` to particular values, so BigQuery may skip far fewer blocks than it would with a `system` filter as well.",
+      "fix": "If the question is about particular `system` values, filter on them with `=` or `IN`.",
+      "line": 1,
+      "column": 26
+    }
+  ],
+  "tables": [
+    "proj.web.packages"
+  ]
+}

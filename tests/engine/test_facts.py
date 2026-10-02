@@ -119,6 +119,55 @@ def test_inner_join_keys_and_per_table_filters() -> None:
     assert join.keys == (("e.user_id", "u.user_id"),)
 
 
+def test_conditions_across_sources_link_columns() -> None:
+    facts = facts_for(
+        "SELECT e.user_id FROM `proj.analytics.events` e "
+        "JOIN `proj.analytics.users` u ON e.user_id = u.user_id "
+        "WHERE e.event_date = '2026-09-01' AND u.signup_date <= e.event_date"
+    )
+    assert table(facts, "e").linked == {"user_id", "event_date"}
+    assert table(facts, "u").linked == {"user_id", "signup_date"}
+
+
+def test_outer_join_links_both_sides() -> None:
+    # A WHERE filter on u could make it an inner join; linking both sides stays safe.
+    facts = facts_for(
+        "SELECT e.user_id FROM `proj.analytics.events` e "
+        "LEFT JOIN `proj.analytics.users` u ON e.user_id = u.user_id"
+    )
+    assert table(facts, "e").linked == {"user_id"}
+    assert table(facts, "u").linked == {"user_id"}
+
+
+def test_links_reach_tables_under_ctes_and_unions() -> None:
+    facts = facts_for(
+        "WITH d AS (SELECT user_id, event_name FROM `proj.analytics.events` "
+        "UNION ALL SELECT user_id, 'x' FROM `proj.analytics.events_archive`) "
+        "SELECT d.event_name FROM d JOIN `proj.analytics.users` u ON d.user_id = u.user_id"
+    )
+    assert table(facts, "events").linked == {"user_id"}
+    assert table(facts, "events_archive").linked == {"user_id"}
+    assert table(facts, "events").predicates == ()  # links aren't filters
+
+
+def test_correlated_subquery_links_the_outer_column() -> None:
+    facts = facts_for(
+        "SELECT e.event_name FROM `proj.analytics.events` e WHERE EXISTS "
+        "(SELECT 1 FROM `proj.analytics.users` u WHERE u.user_id = e.user_id)"
+    )
+    assert table(facts, "e").linked == {"user_id"}
+    assert table(facts, "u").linked == {"user_id"}  # the correlation limits both sides
+
+
+def test_subquery_with_its_own_source_of_that_name_is_not_correlated() -> None:
+    facts = facts_for(
+        "SELECT e.event_name FROM `proj.analytics.events` e WHERE e.user_id IN "
+        "(SELECT e.user_id FROM `proj.analytics.users` e WHERE e.country = 'US')"
+    )
+    events = next(t for t in facts.tables if t.table.name == "events")
+    assert events.linked == frozenset()
+
+
 def test_comma_join_without_condition() -> None:
     facts = facts_for(
         "SELECT e.user_id, u.country FROM `proj.analytics.events` e, `proj.analytics.users` u"

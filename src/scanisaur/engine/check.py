@@ -109,14 +109,14 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy) -> tuple[list[Finding],
 
 
 def _rule_findings(resolution: Resolution, policy: Policy) -> list[Finding]:
-    """Findings from the rules that read per-table facts (SCN003, SCN004)."""
+    """Findings from the rules that read per-table facts (SCN003, SCN004, SCN011)."""
     try:
         facts = extract(resolution)
     except TooComplexError as error:
         if not any(t.partitioning or t.clustering or t.is_wildcard for t in resolution.tables):
             return []  # no rule could apply
-        message = f"Partition filters weren't checked: {error}."
-        return [_unanalyzable(policy, message, "Check the partition filters by hand.")]
+        message = f"Partition and cluster filters weren't checked: {error}."
+        return [_unanalyzable(policy, message, "Check those filters by hand.")]
     except FactsError:
         return []  # nothing is read, e.g. CREATE TABLE without a query
     return pruning_findings(facts)

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN011",
+      "severity": "warn",
+      "message": "`proj.web.pageviews` is clustered by `wiki`, then `title`. The query filters `title` but doesn't limit `wiki` to particular values, so BigQuery may skip far fewer blocks than it would with a `wiki` filter as well.",
+      "fix": "If the question is about particular `wiki` values, filter on them with `=` or `IN`.",
+      "line": 3,
+      "column": 10
+    }
+  ],
+  "tables": [
+    "proj.web.store_sales",
+    "proj.web.pageviews"
+  ]
+}

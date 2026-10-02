@@ -90,3 +90,22 @@ tables:
     columns:
       bucket: INT64
       score: FLOAT64
+  - name: proj.web.packages
+    rows: 21944630783
+    bytes: 12673694921272
+    partitioning: {column: snapshot_at, granularity: DAY}
+    clustering: [system, name, version]
+    columns:
+      snapshot_at: TIMESTAMP
+      system: STRING
+      name: STRING
+      version: STRING
+      licenses: STRING
+  - name: proj.web.store_sales
+    rows: 400000
+    bytes: 52000000
+    clustering: [region, store]
+    columns:
+      region: STRING
+      store: STRING
+      amount: NUMERIC
