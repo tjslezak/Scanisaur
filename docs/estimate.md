@@ -41,7 +41,7 @@ So for each table, the estimate goes partition by partition. For each one, it ta
 - **Shards:** every condition on `_TABLE_SUFFIX` is evaluated against the shard names, `!=`, `NOT IN` and `NOT LIKE` included, because BigQuery checks constant filters against them. In a narrower wildcard such as `events_2026*`, `_TABLE_SUFFIX` is what follows `events_2026`.
 - **Newer partitions:** partitions written after the catalog was read aren't listed. When a filter can pick dates after the newest listed partition, such as `day = CURRENT_DATE()`, each of those days counts in the high end at the size of the newest partition, and the confidence is at most medium.
 - **Clustering and sampling:** a filter on a cluster column may skip blocks that metadata can't see, and `TABLESAMPLE` reads only the blocks it picks. The high end stays at the partitions' size and the low end drops to the minimum.
-- **Rounding and minimum:** each table's bytes are rounded up to a whole MiB, with at least 10 MiB, as BigQuery bills them. A table the query reads no columns of, as in `SELECT COUNT(*)`, adds nothing.
+- **Rounding and minimum:** each table's bytes are rounded up to a whole MiB, with at least 10 MiB, as BigQuery bills them. A table the query reads no columns of, as in `SELECT COUNT(*)`, adds nothing, and so does a query with an outer `LIMIT 0`.
 
 ## What partition filters are evaluated
 
@@ -65,11 +65,16 @@ Conditions known not to prune keep every partition: `!=`, `IS NOT NULL`, the fun
 
 A query's confidence is the lowest of its tables'.
 
-## Not yet measured
+## Measured assumptions
 
-The [estimator benchmark](https://github.com/tjslezak/Scanisaur/issues/10) will check these assumptions against dry runs:
+Measured on 2026-10-02 with dry runs, and two real queries that billed at most 10 MiB:
 
-- whether a query that prunes a table to 0 bytes is still billed the 10 MB minimum (assumed not);
-- whether BigQuery bills only the struct fields a query reads (assumed it bills the whole column);
-- whether `_TABLE_SUFFIX != '…'` and `NOT LIKE` skip the shards they rule out (assumed they do);
-- how far the equal split of variable-width columns is from their real sizes.
+| Assumption | Result |
+| --- | --- |
+| A query that prunes a table to nothing is billed nothing, not the minimum | **Holds.** Trends filtered to a date with no partition processed and billed 0 bytes. |
+| Each table read is billed at least 10 MiB | **Holds.** A query that processed 169 bytes billed 10,485,760. |
+| `_TABLE_SUFFIX != '…'` and `NOT LIKE` skip the shards they rule out | **Holds.** GA4's shards: 55.95 MB in all, 55.61 MB with `!= '20210131'`, 40.39 MB with `NOT LIKE '202101%'`. |
+| An outer `LIMIT 0` reads nothing | **Holds.** It processed 0 bytes, and the estimate now gives 0. |
+| BigQuery bills the whole struct column | **Doesn't hold.** `device.category` processed 227 KB against 1.92 MB for all of `device`. The estimate bills the whole column, so it overestimates queries that read struct fields, 8.4x here. |
+
+How far the equal split of variable-width columns is from their real sizes is what the [dry-run benchmark](../benchmark/README.md) measures.

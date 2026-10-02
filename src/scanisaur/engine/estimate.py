@@ -118,6 +118,9 @@ def estimate(
     price in US dollars; None (capacity pricing) leaves out the dollars. ``sampled`` names
     the tables read with TABLESAMPLE, which bills only the blocks it picks.
     """
+    if facts.outer_limit == 0:  # measured: BigQuery returns the schema and reads nothing
+        free = None if price_per_tib is None else 0.0
+        return Estimate(bytes_low=0, bytes_high=0, confidence="high", usd_low=free, usd_high=free)
     by_table: dict[str, list[TableFacts]] = {}
     for table_facts in facts.tables:
         by_table.setdefault(table_facts.table.qualified_name, []).append(table_facts)

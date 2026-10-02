@@ -175,6 +175,10 @@ class TestColumns:
         table = Table("p", "d", "t", (Column("a", "INT64"),))
         assert check("SELECT a FROM t", Catalog((table,), "p", "d")).estimate is None
 
+    def test_limit_zero_reads_nothing(self) -> None:
+        # Measured: `SELECT * FROM top_terms LIMIT 0` processes 0 bytes.
+        assert billed("SELECT * FROM trends LIMIT 0") == (0, 0)
+
     def test_no_tables(self) -> None:
         assert billed("SELECT 1") == (0, 0)
 

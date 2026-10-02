@@ -63,10 +63,11 @@ select = ["B", "C4", "E", "F", "I", "N", "PT", "RUF", "SIM", "UP", "W"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "benchmark"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 
 [tool.coverage.run]
