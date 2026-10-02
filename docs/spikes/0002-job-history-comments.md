@@ -18,6 +18,8 @@ Yes, on every path tested, whether the tag leads or trails the query. Matching c
 | Python client (`google-cloud-bigquery`) | Yes | Yes | Only the caller's |
 | Google's BigQuery MCP server (`execute_sql`) | Yes | Yes | `goog-mcp-server=true`, plus the caller's |
 
+> **Update (issue [#13](https://github.com/tjslezak/Scanisaur/issues/13)):** the tag is now `/* scanisaur:q_<fingerprint> */`. The fingerprint is a hash of the SQL's tokens, ignoring whitespace and comments, so the same query always gets the same tag. A tag unique to each check made every repeated query miss BigQuery's cache: the same query with a different comment was billed in full each time, and an identical one was free. Matching works as before, except that a tag now identifies the query rather than one check; each check keeps its own `check_id`.
+
 ## Details
 
 - **MCP queries without a job:** the MCP server runs fast queries without creating a persistent job, and returns a query ID instead of a job ID. They still appear in `JOBS_BY_PROJECT`, with the query ID as `job_id`.

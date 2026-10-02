@@ -50,7 +50,7 @@ class TestCheckCommand:
         assert result.exit_code == EXIT_OK
         lines = result.stdout.splitlines()
         assert lines[0] == "pass: 0 findings · reads proj.analytics.events"
-        assert re.fullmatch(r"tag: /\* scanisaur:chk_\w{18} \*/", lines[-1])
+        assert re.fullmatch(r"tag: /\* scanisaur:q_\w{20} \*/", lines[-1])
 
     def test_block_from_file(self, tmp_path: Path) -> None:
         path = tmp_path / "query.sql"

@@ -6,13 +6,14 @@ import pytest
 from scanisaur.catalog import Catalog, Column, Partitioning, Table
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.engine import check as check_module
-from scanisaur.engine.check import Policy, check, new_check_id, tag_for
+from scanisaur.engine.check import Policy, check, fingerprint, new_check_id, tag_for
 from scanisaur.engine.resolve import ResolveError
 from scanisaur.engine.result import Severity, Verdict
 from scanisaur.engine.rules import UNANALYZABLE, UNKNOWN_IDENTIFIER, WRITE_STATEMENT
 
 CATALOG = load_catalog(Path(__file__).parents[1] / "golden" / "catalog.yaml")
 CHECK_ID = re.compile(r"^chk_[0-9a-hjkmnp-tv-z]{18}$")
+FINGERPRINT = re.compile(r"^q_[0-9a-hjkmnp-tv-z]{20}$")
 
 
 class TestCheckId:
@@ -30,8 +31,51 @@ class TestCheckId:
     def test_deterministic_for_the_same_inputs(self) -> None:
         assert new_check_id(now_ms=5, randomness=7) == new_check_id(now_ms=5, randomness=7)
 
-    def test_tag(self) -> None:
-        assert tag_for("chk_abc") == "/* scanisaur:chk_abc */"
+
+class TestTag:
+    SQL = "SELECT user_id FROM events WHERE event_date = '2026-09-01'"
+
+    def test_format(self) -> None:
+        assert FINGERPRINT.match(fingerprint(self.SQL))
+        assert tag_for(self.SQL) == f"/* scanisaur:{fingerprint(self.SQL)} */"
+
+    @pytest.mark.parametrize(
+        "same",
+        [
+            "SELECT  user_id\nFROM events\nWHERE event_date = '2026-09-01'\n",
+            "SELECT user_id -- who\nFROM events # where\nWHERE event_date = '2026-09-01'",
+            "/* note */ SELECT user_id FROM events WHERE event_date = '2026-09-01'",
+        ],
+    )
+    def test_ignores_whitespace_and_comments(self, same: str) -> None:
+        assert fingerprint(same) == fingerprint(self.SQL)
+
+    def test_ignores_an_earlier_tag(self) -> None:
+        tag = tag_for(self.SQL)
+        assert fingerprint(f"{self.SQL} {tag}") == fingerprint(self.SQL)
+        assert fingerprint(f"{tag}\n{self.SQL}") == fingerprint(self.SQL)
+
+    @pytest.mark.parametrize(
+        "different",
+        [
+            "SELECT user_id FROM events WHERE event_date = '2026-09-02'",
+            "SELECT user_id FROM Events WHERE event_date = '2026-09-01'",
+            "SELECT user_id FROM events WHERE event_date = `2026-09-01`",
+            "SELECT user_id FROM events WHERE event_date = 2026-09-01",
+        ],
+    )
+    def test_any_token_change_counts(self, different: str) -> None:
+        assert fingerprint(different) != fingerprint(self.SQL)
+
+    def test_unpaired_surrogate(self) -> None:
+        assert FINGERPRINT.match(fingerprint("SELECT '\ud800'"))
+
+    def test_sql_that_cannot_be_tokenized(self) -> None:
+        sql = "SELECT 'unterminated"
+        assert FINGERPRINT.match(fingerprint(sql))
+        assert fingerprint(f"{sql}  ") == fingerprint(sql)
+        assert fingerprint(f"/* scanisaur:q_x */ {sql}") == fingerprint(sql)
+        assert fingerprint(sql) != fingerprint("SELECT 'unterminated other")
 
 
 class TestCheck:
@@ -41,7 +85,7 @@ class TestCheck:
         assert result.findings == ()
         assert result.tables == ("proj.analytics.events",)
         assert result.check_id == "chk_test"
-        assert result.tag == "/* scanisaur:chk_test */"
+        assert result.tag == tag_for("SELECT user_id FROM events")
         assert result.schema_version == 1
 
     def test_query_in_parentheses(self) -> None:
@@ -52,7 +96,12 @@ class TestCheck:
     def test_generates_a_check_id(self) -> None:
         result = check("SELECT 1", CATALOG)
         assert CHECK_ID.match(result.check_id)
-        assert result.tag == tag_for(result.check_id)
+
+    def test_same_sql_same_tag(self) -> None:
+        # Each check has its own ID, but the tag repeats so BigQuery's cache still works.
+        first, second = (check("SELECT user_id FROM events", CATALOG) for _ in range(2))
+        assert first.check_id != second.check_id
+        assert first.tag == second.tag
 
     def test_block(self) -> None:
         result = check("SELECT nope FROM events", CATALOG)

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import secrets
 import time
 from dataclasses import dataclass
 from typing import Literal
 
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
+from sqlglot.errors import TokenError
 
 from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.parse import (
@@ -29,6 +33,10 @@ _BY_HAND = "Check the table and column names by hand before running it."
 #: Crockford base32, lowercase: sortable and unambiguous to read aloud.
 _ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 _RANDOM_BITS = 40
+#: 100 bits: collisions are negligible for any one project's query history.
+_FINGERPRINT_DIGITS = 20
+#: A tracking tag already in the SQL, removed before fingerprinting SQL that can't be tokenized.
+_TAG = re.compile(r"/\*\s*scanisaur:[^*]*\*/")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +61,7 @@ def check(
     findings, tables = _analyze(sql, catalog, policy)
     return CheckResult(
         check_id=check_id,
-        tag=tag_for(check_id),
+        tag=tag_for(sql),
         verdict=verdict_for(findings),
         findings=tuple(findings),
         tables=tuple(table.qualified_name for table in tables),
@@ -129,14 +137,42 @@ def new_check_id(now_ms: int | None = None, randomness: int | None = None) -> st
     """A time-sortable ID: 48 bits of milliseconds and 40 random bits, in base32."""
     millis = time.time_ns() // 1_000_000 if now_ms is None else now_ms
     random = secrets.randbits(_RANDOM_BITS) if randomness is None else randomness
-    value = (millis << _RANDOM_BITS) | random
-    digits = []
-    for _ in range(18):  # 88 bits in 5-bit digits, fixed width so IDs sort by time
+    # 88 bits in 18 digits, fixed width so IDs sort by time.
+    return "chk_" + _base32((millis << _RANDOM_BITS) | random, 18)
+
+
+def fingerprint(sql: str) -> str:
+    """Identify a query by its tokens, ignoring whitespace and comments.
+
+    Comments include an earlier tracking tag, so re-checking tagged SQL gives the same
+    fingerprint.
+    """
+    try:
+        tokens = Dialect.get_or_raise(DIALECT).tokenize(sql)
+    except TokenError:
+        canonical = " ".join(_TAG.sub(" ", sql).split())
+    else:
+        # The token type keeps 'a' (a string) apart from `a` (a name).
+        canonical = "\x1e".join(f"{token.token_type.name}\x1f{token.text}" for token in tokens)
+    # surrogatepass: SQL decoded from JSON can hold an unpaired surrogate.
+    data = canonical.encode("utf-8", "surrogatepass")
+    digest = int.from_bytes(hashlib.sha256(data).digest(), "big")
+    return "q_" + _base32(digest >> (256 - 5 * _FINGERPRINT_DIGITS), _FINGERPRINT_DIGITS)
+
+
+def tag_for(sql: str) -> str:
+    """The SQL comment an agent adds to the query it runs.
+
+    It depends only on the SQL, so a repeated query keeps the same text and BigQuery can
+    serve it from its cache. A tag unique to each check would make every run a cache miss.
+    """
+    return f"/* scanisaur:{fingerprint(sql)} */"
+
+
+def _base32(value: int, digits: int) -> str:
+    """The lowest ``5 * digits`` bits of ``value``, most significant digit first."""
+    out = []
+    for _ in range(digits):
         value, digit = divmod(value, 32)
-        digits.append(_ALPHABET[digit])
-    return "chk_" + "".join(reversed(digits))
-
-
-def tag_for(check_id: str) -> str:
-    """The SQL comment an agent adds to the executed query."""
-    return f"/* scanisaur:{check_id} */"
+        out.append(_ALPHABET[digit])
+    return "".join(reversed(out))
