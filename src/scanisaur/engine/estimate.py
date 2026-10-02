@@ -121,8 +121,7 @@ def estimate(
     by_table: dict[str, list[TableFacts]] = {}
     for table_facts in facts.tables:
         by_table.setdefault(table_facts.table.qualified_name, []).append(table_facts)
-    if now.tzinfo is not None:
-        now = now.astimezone(UTC).replace(tzinfo=None)
+    now = _naive_utc(now)
     low = high = 0
     confidence: Confidence = "high"
     for name, references in by_table.items():
@@ -148,6 +147,11 @@ def estimate(
     )
 
 
+def _naive_utc(now: datetime) -> datetime:
+    """``now`` in UTC without a time zone, as partition IDs and literals are read."""
+    return now if now.tzinfo is None else now.astimezone(UTC).replace(tzinfo=None)
+
+
 @dataclass(frozen=True, slots=True)
 class _Read:
     """What one reference reads: its columns, in the units it may and surely reads."""
@@ -160,6 +164,14 @@ class _Read:
 
 #: Without a partition list, the whole table is one unit.
 _WHOLE = "*"
+
+
+def table_estimate(
+    references: list[TableFacts], now: datetime
+) -> tuple[int, int, Confidence] | None:
+    """Billed bytes (low, high) and confidence for one table read by ``references``; None
+    when it can't be estimated, as ``estimate`` says."""
+    return _table_estimate(references, _naive_utc(now))
 
 
 def _table_estimate(

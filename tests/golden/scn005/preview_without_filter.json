@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.analytics.events` is partitioned by `event_date`, but the query doesn't filter on it, so it reads every partition (2.1 TB in all).",
+      "fix": "Add a filter on `event_date`, for example `event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 15
+    },
+    {
+      "rule": "SCN005",
+      "severity": "warn",
+      "message": "Selecting `*` reads every column of `proj.analytics.events` in the partitions the query touches, up to 2.1 TB.",
+      "fix": "Select only the columns you need. For column names and types, use `scanisaur_schema_describe`, which reads no data.",
+      "line": 1,
+      "column": 15
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 2100000980992,
+    "bytes_high": 2100000980992,
+    "confidence": "medium",
+    "usd_low": 11.9371,
+    "usd_high": 11.9371
+  }
+}
