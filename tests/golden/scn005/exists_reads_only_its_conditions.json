@@ -8,9 +8,9 @@
   ],
   "estimate": {
     "bytes_low": 441450496,
-    "bytes_high": 530231328768,
+    "bytes_high": 356831461376,
     "confidence": "low",
     "usd_low": 0.0025,
-    "usd_high": 3.014
+    "usd_high": 2.0284
   }
 }

@@ -4,9 +4,12 @@ BigQuery bills each column of each partition once per query, however many times 
 reads it: a CTE read twice, or a self-join on the same partitions, is billed as one read
 (measured in issue #15). So for each table the estimate takes, partition by partition, the
 union of the columns that every reference reads there, and never multiplies by ``scans``.
+The unit is the leaf field: BigQuery bills ``device.category`` without the rest of
+``device`` (measured in issue #22).
 
-- **Columns:** fixed-width types use BigQuery's sizes. Variable-width columns (STRING,
-  BYTES, JSON, GEOGRAPHY, ARRAY, and STRUCTs holding them) split the rest of the table.
+- **Columns:** fixed-width types use BigQuery's sizes. The leaf fields of variable-width
+  columns (STRING, BYTES, JSON, GEOGRAPHY, ARRAY, and STRUCTs holding them) split the rest
+  of the table equally, so a struct of ten fields counts ten times a STRING.
 - **Partitions:** the filters SCN003 counts as pruning are evaluated against the catalog's
   partitions, or a wildcard family's shards. Without that list, a filtered table may cost
   anything up to all of it.
@@ -20,7 +23,7 @@ from __future__ import annotations
 import calendar
 import functools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TypeVar
@@ -155,14 +158,28 @@ def _naive_utc(now: datetime) -> datetime:
     return now if now.tzinfo is None else now.astimezone(UTC).replace(tzinfo=None)
 
 
+#: A leaf field: a column's name, then the struct fields down to the leaf.
+_Leaf = tuple[str, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class _Read:
-    """What one reference reads: its columns, in the units it may and surely reads."""
+    """What one reference reads: its leaf fields, in the units it may and surely reads."""
 
-    columns: frozenset[str]
+    leaves: frozenset[_Leaf]
     high: frozenset[str]
     low: frozenset[str]
     confidence: Confidence
+
+
+@dataclass(frozen=True, slots=True)
+class _Layout:
+    """Each leaf field's share of a table's bytes, how well it is known, and each column's
+    leaf fields."""
+
+    shares: dict[_Leaf, float]
+    confidence: dict[_Leaf, Confidence]
+    leaves: dict[str, tuple[_Leaf, ...]]
 
 
 #: Without a partition list, the whole table is one unit.
@@ -184,29 +201,29 @@ def _table_estimate(
     table = references[0].table
     if table.size_bytes is None or table.kind in ("VIEW", "EXTERNAL"):
         return None
-    shares, column_confidence = _column_shares(table)
+    layout = _layout(table)
     listed = bool(table.partitions) and (table.partitioning is not None or table.is_wildcard)
     domain = _domain(table, now) if table.partitioning is not None or table.is_wildcard else None
     units = {p.id: p.size_bytes for p in table.partitions} if listed else {_WHOLE: table.size_bytes}
     if listed and domain is not None:
         units |= _newer(table, domain)
-    high_columns: dict[str, set[str]] = {}
-    low_columns: dict[str, set[str]] = {}
+    high_leaves: dict[str, set[_Leaf]] = {}
+    low_leaves: dict[str, set[_Leaf]] = {}
     confidence: Confidence = "high"
     for reference in references:
-        read = _read(reference, shares, units, domain)
-        if not read.columns:
+        read = _read(reference, layout, units, domain)
+        if not read.leaves:
             continue  # e.g. COUNT(*), answered from metadata
         for unit in read.high:
-            high_columns.setdefault(unit, set()).update(read.columns)
+            high_leaves.setdefault(unit, set()).update(read.leaves)
         for unit in read.low:
-            low_columns.setdefault(unit, set()).update(read.columns)
-        ranks = [read.confidence, *(column_confidence[c] for c in read.columns)]
+            low_leaves.setdefault(unit, set()).update(read.leaves)
+        ranks = [read.confidence, *(layout.confidence[leaf] for leaf in read.leaves)]
         confidence = min(confidence, *ranks, key=_RANK.__getitem__)
-    if not any(units[unit] for unit in high_columns):
+    if not any(units[unit] for unit in high_leaves):
         return 0, 0, confidence  # nothing to read: no columns, or empty partitions
-    low = _billed(_scanned(low_columns, units, shares))
-    return low, _billed(_scanned(high_columns, units, shares)), confidence
+    low = _billed(_scanned(low_leaves, units, layout.shares))
+    return low, _billed(_scanned(high_leaves, units, layout.shares)), confidence
 
 
 def _billed(scanned: float) -> int:
@@ -215,21 +232,21 @@ def _billed(scanned: float) -> int:
 
 
 def _scanned(
-    columns: dict[str, set[str]], units: dict[str, int], shares: dict[str, float]
+    leaves: dict[str, set[_Leaf]], units: dict[str, int], shares: dict[_Leaf, float]
 ) -> float:
-    """Each column of each unit counted once, however many references read it."""
-    return sum(units[unit] * sum(shares[c] for c in read) for unit, read in columns.items())
+    """Each leaf field of each unit counted once, however many references read it."""
+    return sum(units[unit] * sum(shares[leaf] for leaf in read) for unit, read in leaves.items())
 
 
 def _read(
     reference: TableFacts,
-    shares: dict[str, float],
+    layout: _Layout,
     units: dict[str, int],
     domain: _Domain | None,
 ) -> _Read:
     table = reference.table
-    columns = frozenset(reference.columns) & shares.keys()
-    if not columns:
+    leaves = _leaves_read(reference, layout)
+    if not leaves:
         return _Read(frozenset(), frozenset(), frozenset(), "high")
     parsed = parsed_conditions(reference)
     conditions = partition_conditions(reference, parsed)
@@ -241,10 +258,10 @@ def _read(
             _keeps_all(tree, domain, table) for tree in conditions
         )
         if limited or narrowed:  # limits partitions, by how much isn't known
-            return _Read(columns, whole, frozenset(), "low")
+            return _Read(leaves, whole, frozenset(), "low")
         if blocks:
-            return _Read(columns, whole, frozenset(), "medium")
-        return _Read(columns, whole, whole, "high")
+            return _Read(leaves, whole, frozenset(), "medium")
+        return _Read(leaves, whole, whole, "high")
     if all(_keeps_all(tree, domain, table) for tree in conditions):
         # Unfiltered: the partitions listed. Newer ones matter only to a filter that
         # could pick them alone, such as `= CURRENT_DATE()`.
@@ -258,56 +275,102 @@ def _read(
         confidence = min(confidence, "medium", key=_RANK.__getitem__)
     known = frozenset(unit for unit in high if not _is_newer(unit))
     low = known if exact and not blocks else frozenset()
-    return _Read(columns, high, low, confidence)
+    return _Read(leaves, high, low, confidence)
 
 
-def _column_shares(table: Table) -> tuple[dict[str, float], dict[str, Confidence]]:
-    """Each column's share of the table's bytes, and how well it is known.
+def _leaves_read(reference: TableFacts, layout: _Layout) -> frozenset[_Leaf]:
+    """The leaf fields a reference reads: every leaf under each path it reads. A path past
+    a leaf, as into a JSON value, reads that leaf; one the schema doesn't have reads the
+    whole column."""
+    paths = reference.paths
+    if paths is None:
+        paths = frozenset((column,) for column in reference.columns)
+    read: set[_Leaf] = set()
+    for path in paths:
+        leaves = layout.leaves.get(path[0])
+        if leaves is None:
+            continue  # a pseudo-column such as _PARTITIONTIME, which is free
+        under = [leaf for leaf in leaves if leaf[: len(path)] == path]
+        if not under:
+            under = [leaf for leaf in leaves if path[: len(leaf)] == leaf] or list(leaves)
+        read.update(under)
+    return frozenset(read)
 
-    A fixed-width column holds its width in bytes for every row. Variable-width columns
-    split the rest. When fixed-width columns would fill the table (NULLs take no space),
-    the split can't be known, so every column gets an equal share.
+
+def _layout(table: Table) -> _Layout:
+    """Each leaf field's share of the table's bytes, and how well it is known.
+
+    A fixed-width column, or a struct of fixed-width fields, holds each field's width in
+    bytes for every row. The leaf fields of the other columns split the rest equally, so a
+    struct of ten fields gets ten times a STRING's share. When fixed-width fields would
+    fill the table (NULLs take no space), the split can't be known, so every field gets an
+    equal share.
     """
     size = table.size_bytes or 0
-    widths = {column.name.lower(): _width(column.type) for column in table.columns}
     rows = table.row_count
-    fixed = {n: rows * w for n, w in widths.items() if w is not None} if rows is not None else {}
-    variable = [name for name, width in widths.items() if width is None]
+    leaves: dict[str, tuple[_Leaf, ...]] = {}
+    widths: dict[_Leaf, int | None] = {}
+    for column in table.columns:
+        name = column.name.lower()
+        fields = _fields(column.type)
+        varies = any(width is None for _path, width in fields)
+        leaves[name] = tuple((name, *path) for path, _width in fields)
+        for leaf, (_path, width) in zip(leaves[name], fields, strict=True):
+            widths[leaf] = None if varies else width
+    fixed = (
+        {leaf: rows * w for leaf, w in widths.items() if w is not None} if rows is not None else {}
+    )
+    variable = [leaf for leaf, width in widths.items() if width is None]
     total = sum(fixed.values())
     if rows is None or size == 0 or (variable and total >= size):
         even = 1 / len(widths)
-        return dict.fromkeys(widths, even), dict.fromkeys(widths, "low")
-    if total > size:  # only fixed-width columns, smaller than their width for NULLs
-        return {n: fixed[n] / total for n in widths}, dict.fromkeys(widths, "medium")
-    shares: dict[str, float] = {}
-    confidence: dict[str, Confidence] = {}
+        return _Layout(dict.fromkeys(widths, even), dict.fromkeys(widths, "low"), leaves)
+    if total > size:  # only fixed-width fields, smaller than their widths for NULLs
+        shares = {leaf: fixed[leaf] / total for leaf in widths}
+        return _Layout(shares, dict.fromkeys(widths, "medium"), leaves)
     rest = (size - total) / len(variable) if variable else 0.0
-    for name in widths:
-        shares[name] = fixed.get(name, rest) / size
-        confidence[name] = "high" if name in fixed else "medium"
-    return shares, confidence
+    shares = {leaf: fixed.get(leaf, rest) / size for leaf in widths}
+    confidence: dict[_Leaf, Confidence] = {
+        leaf: "high" if leaf in fixed else "medium" for leaf in widths
+    }
+    return _Layout(shares, confidence, leaves)
 
 
 @functools.cache
-def _width(type_: str) -> int | None:
-    """Bytes per value of a fixed-width type; None for variable-width types."""
+def _fields(type_: str) -> tuple[tuple[tuple[str, ...], int | None], ...]:
+    """A column type's leaf fields, as (path within the column, bytes per value or None
+    for a variable width). A scalar is one field with an empty path; an ARRAY has its
+    element's fields, all of variable width."""
     try:
         data_type = exp.DataType.build(type_, dialect=DIALECT)
     except SqlglotError:
-        return None
-    return _type_width(data_type)
+        return (((), None),)
+    return tuple(_leaf_fields(data_type, repeated=False))
 
 
-def _type_width(data_type: exp.DataType) -> int | None:
+def _leaf_fields(
+    data_type: exp.DataType, *, repeated: bool
+) -> Iterator[tuple[tuple[str, ...], int | None]]:
+    if data_type.this == _T.ARRAY:
+        element = data_type.expressions[0] if data_type.expressions else None
+        if isinstance(element, exp.DataType):
+            yield from _leaf_fields(element, repeated=True)
+        else:
+            yield (), None
+        return
     if data_type.this == _T.STRUCT:
-        widths = [
-            _type_width(kind) if isinstance(kind := field.args.get("kind"), exp.DataType) else None
-            for field in data_type.expressions
+        kinds = [
+            (field_.name.lower(), kind)
+            for field_ in data_type.expressions
+            if isinstance(kind := field_.args.get("kind"), exp.DataType)
         ]
-        if not widths or any(width is None for width in widths):
-            return None
-        return sum(width for width in widths if width is not None)
-    return _WIDTHS.get(data_type.this)
+        if not kinds:
+            yield (), None
+        for name, kind in kinds:
+            for path, width in _leaf_fields(kind, repeated=repeated):
+                yield (name, *path), width
+        return
+    yield (), None if repeated else _WIDTHS.get(data_type.this)
 
 
 # Partition filters --------------------------------------------------------------------

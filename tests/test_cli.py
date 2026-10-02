@@ -51,7 +51,7 @@ class TestCheckCommand:
         assert result.exit_code == EXIT_OK
         lines = result.stdout.splitlines()
         assert lines[0] == "pass: 0 findings · reads proj.analytics.events"
-        assert lines[-2] == "estimate: 10.5 MB-529.8 GB billed, <$0.01-$3.01 (low confidence)"
+        assert lines[-2] == "estimate: 10.5 MB-356.4 GB billed, <$0.01-$2.03 (low confidence)"
         assert re.fullmatch(r"tag: /\* scanisaur:q_\w{20} \*/", lines[-1])
 
     def test_nearly_equal_range_is_shown_once(self) -> None:

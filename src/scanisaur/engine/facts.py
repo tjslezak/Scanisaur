@@ -8,6 +8,9 @@ are built from ``resolve()``'s qualified tree and follow what BigQuery's planner
 - A table counts only the columns its readers use, so ``SELECT *`` in a CTE whose
   reader picks one column reads one column.
 - A CTE is followed once per reference, because BigQuery evaluates each reference.
+- A struct field is read on its own: ``device.category``, or ``i.item_name`` through
+  ``UNNEST(items) AS i``, reads that field rather than the whole column, as BigQuery
+  bills it (measured in issue #22).
 """
 
 from __future__ import annotations
@@ -121,6 +124,10 @@ class TableFacts:
     #: as ``p.wiki = w.wiki``, a correlated ``EXISTS``, ``INTERSECT``, or a reader's filter
     #: that can't move down to the table, as one above a ``LIMIT`` can't.
     linked: frozenset[str] = frozenset()
+    #: The struct fields read, as paths from the column such as ("device", "category"); a
+    #: column read whole is its name alone. Every column in ``columns`` starts a path.
+    #: None when every column is read whole.
+    paths: frozenset[tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +190,9 @@ class _Item(NamedTuple):
     #: Output columns whose values the reader may limit in ways that aren't filters here:
     #: a join, a correlated subquery, or a filter that can't move below this scope.
     linked: frozenset[str] = frozenset()
+    #: The fields of output columns the reader reads, as paths from the column's name; a
+    #: column read whole is its name alone. None: every column it reads, whole.
+    fields: frozenset[tuple[str, ...]] | None = None
 
 
 _Sources = tuple[
@@ -210,6 +220,13 @@ class _Walk:
         self._visits = 0
         self._budget = len(scopes) + _MAX_REVISITS
         self._names: dict[int, list[str]] = {}
+        # Each UNNEST, with the scope that reads its elements and their alias there.
+        self._unnests = {
+            id(node): (scope, alias)
+            for scope in scopes
+            for alias, (node, _source) in scope.selected_sources.items()
+            if isinstance(node, exp.Unnest)
+        }
         self.joins: list[Join] = []
         self._schedule(scopes[-1], None, (), 1)
 
@@ -243,6 +260,7 @@ class _Walk:
         pushed: Iterable[_Pushed],
         runs: int,
         linked: frozenset[str] = frozenset(),
+        fields: frozenset[tuple[str, ...]] | None = None,
     ) -> None:
         position = self._position.get(id(scope))
         if position is None:
@@ -253,9 +271,15 @@ class _Walk:
         if bucket is None:
             bucket = self._pending[id(scope)] = {}
             heapq.heappush(self._queue, (position, id(scope)))
-        item, count = bucket.get(key, (_Item(needed, pushed), 0))
-        # Links don't split visits: readers that differ only in them share one visit.
-        bucket[key] = (item._replace(linked=item.linked | linked), count + runs)
+        found = bucket.get(key)
+        if found is None:
+            bucket[key] = (_Item(needed, pushed, linked, fields), runs)
+            return
+        # Links and fields don't split visits: readers that differ only in them share one
+        # visit, which reads what any of them does.
+        item, count = found
+        merged = None if item.fields is None or fields is None else item.fields | fields
+        bucket[key] = (item._replace(linked=item.linked | linked, fields=merged), count + runs)
 
     def _output_names(self, expression: exp.Expr) -> list[str]:
         """A query's output column names. A long UNION chain shares its leftmost
@@ -299,23 +323,30 @@ class _Walk:
             and not operation.args.get("distinct")
             and not recursive
         )
-        needed = item.needed
+        needed, fields = item.needed, item.fields
         if needed is not None:  # ORDER BY on the UNION reads its columns in every branch
-            needed = needed | _named_in(operation.args.get("order"), set(names))
+            ordered = _named_in(operation.args.get("order"), set(names))
+            needed = needed | ordered
+            if fields is not None:
+                fields = fields | {(name,) for name in ordered}
         for branch in scope.set_operation_scopes:
             branch_names = self._output_names(branch.expression)
             if operation.args.get("by_name"):  # BY NAME and CORRESPONDING match by name
                 renamed = {name: name for name in names if name in branch_names}
             else:
                 renamed = dict(zip(names, branch_names, strict=False))
-            branch_needed = None
+            branch_needed = branch_fields = None
             if needed is not None and prunes:
                 branch_needed = frozenset(renamed[n] for n in needed if n in renamed)
+                if fields is not None:
+                    branch_fields = frozenset(
+                        (renamed[path[0]], *path[1:]) for path in fields if path[0] in renamed
+                    )
             branch_pushed = [
                 p._replace(condition=_rename(p.condition, p.alias, renamed)) for p in pushed
             ]
             branch_linked = frozenset(renamed[n] for n in linked if n in renamed)
-            self._schedule(branch, branch_needed, branch_pushed, runs, branch_linked)
+            self._schedule(branch, branch_needed, branch_pushed, runs, branch_linked, branch_fields)
 
     def _visit_select(self, scope: Scope, select: exp.Select, item: _Item, runs: int) -> None:
         tables, derived, names, positions = self._sources(scope)
@@ -343,13 +374,21 @@ class _Walk:
             linked.add(local)
 
         reads = _read_columns(scope, select, item.needed)
+        paths: dict[str, set[tuple[str, ...]]] = {}
+        for column in reads.columns:
+            paths.setdefault(column.table, set()).update(
+                self._read_paths(column, select, item.fields)
+            )
         stars = stars_of(select)
         for alias, table in tables.items():
             starred = [s for s in stars if s.qualifier.lower() in ("", alias.lower())]
+            table_paths: frozenset[tuple[str, ...]] | None = None
             if alias in reads.whole_rows:
                 columns = frozenset(column.name.lower() for column in table.columns)
             else:
                 columns = frozenset(c.name.lower() for c in reads.columns if c.table == alias)
+                if any(len(path) > 1 for path in paths.get(alias, ())):
+                    table_paths = frozenset(paths[alias])
             self._visited.append(
                 TableFacts(
                     table=table,
@@ -362,6 +401,7 @@ class _Walk:
                     linked=linked.of(alias),
                     name=names[alias],
                     position=positions[alias],
+                    paths=table_paths,
                 )
             )
         if id(scope) not in self._joined:
@@ -376,11 +416,72 @@ class _Walk:
                 self._schedule(source, None, pushdown[alias], runs, links)
             else:
                 used = frozenset(c.name.lower() for c in reads.columns if c.table == alias)
-                self._schedule(source, used, pushdown[alias], runs, links)
+                fields = frozenset(paths.get(alias, ()))
+                self._schedule(source, used, pushdown[alias], runs, links, fields)
         for child in [*scope.subquery_scopes, *scope.udtf_scopes]:
             # BigQuery drops output columns nobody reads, with any subquery inside them.
             if not any(_within(child.expression, projection) for projection in reads.unused):
                 self._schedule(child, _needed_by(child), (), runs)
+
+    def _read_paths(
+        self, column: exp.Column, select: exp.Select, fields: frozenset[tuple[str, ...]] | None
+    ) -> set[tuple[str, ...]]:
+        """What reading ``column`` here reads of it: the struct fields written after it,
+        and those the reader reads of the output column it is, or of an array's elements
+        through UNNEST."""
+        top, chain = _field_chain(column)
+        path = (column.name.lower(), *chain)
+        parent = top.parent
+        if isinstance(parent, exp.Unnest):
+            inner = self._unnest_fields(parent)
+        else:
+            projection = parent if isinstance(parent, exp.Alias) else top
+            inner = None
+            if projection.parent is select and projection.arg_key == "expressions":
+                inner = _output_fields(select, projection.alias_or_name.lower(), fields)
+        if inner is None:
+            return {path}
+        return {(*path, *field) for field in inner}
+
+    def _unnest_fields(self, unnest: exp.Unnest) -> frozenset[tuple[str, ...]] | None:
+        """The fields of an array's elements the query reads through ``unnest``, as paths
+        within an element; None when it reads whole elements, or that isn't known."""
+        found = self._unnests.get(id(unnest))
+        if found is None or len(unnest.expressions) != 1:
+            return None
+        scope, alias = found
+        table_alias = unnest.args.get("alias")
+        names = table_alias.columns if isinstance(table_alias, exp.TableAlias) else []
+        # `UNNEST(items) AS i` names each element i; without a name, a struct element's
+        # fields are read as columns.
+        element = names[0].name.lower() if names else None
+        offset = unnest.args.get("offset")
+        position = offset.name.lower() if isinstance(offset, exp.Expr) else None
+        fields: set[tuple[str, ...]] = set()
+        for column in scope.columns:
+            if column.table != alias or isinstance(column, exp.Pseudocolumn):
+                continue
+            name = column.name.lower()
+            if name == position:
+                continue  # WITH OFFSET: the element's position, not its data
+            _top, chain = _field_chain(column)
+            if element is None:
+                fields.add((name, *chain))
+            elif name == element and chain:
+                fields.add(chain)
+            else:
+                return None  # the whole element, as in TO_JSON_STRING(i)
+        if any(n.name == alias for n in find_all_in_scope(scope.expression, exp.TableColumn)):
+            return None
+        for projection in scope.expression.expressions:
+            # A star qualify() couldn't expand (duplicate names) reads whole elements.
+            if isinstance(projection, exp.Star) or (
+                isinstance(projection, exp.Column)
+                and isinstance(projection.this, exp.Star)
+                and projection.table == alias
+            ):
+                return None
+        return frozenset(fields) or None
 
     def _sources(self, scope: Scope) -> _Sources:
         """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
@@ -529,6 +630,35 @@ def _within(node: exp.Expr, ancestor: exp.Expr) -> bool:
             return True
         parent = parent.parent
     return False
+
+
+def _field_chain(column: exp.Column) -> tuple[exp.Expr, tuple[str, ...]]:
+    """The outermost struct field access on ``column``, as ``e.device.web_info.browser``
+    on ``e.device``, and the fields it goes through."""
+    node: exp.Expr = column
+    names: list[str] = []
+    while isinstance(node.parent, exp.Dot) and node.parent.this is node:
+        field_name = node.parent.expression
+        if not isinstance(field_name, exp.Identifier):
+            break
+        names.append(field_name.name.lower())
+        node = node.parent
+    return node, tuple(names)
+
+
+def _output_fields(
+    select: exp.Select, name: str, fields: frozenset[tuple[str, ...]] | None
+) -> frozenset[tuple[str, ...]] | None:
+    """The fields of output column ``name`` the reader reads; None when it reads the
+    whole column. DISTINCT, and GROUP BY or another clause naming it, read it whole."""
+    if fields is None or select.args.get("distinct"):
+        return None
+    inner = frozenset(path[1:] for path in fields if path[0] == name)
+    if not inner or () in inner:
+        return None
+    if any(_named_in(select.args.get(key), {name}) for key in _ALIAS_CLAUSES):
+        return None
+    return inner
 
 
 def _from_alias(select: exp.Select) -> str:

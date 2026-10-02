@@ -15,10 +15,10 @@
     "proj.analytics.events"
   ],
   "estimate": {
-    "bytes_low": 520200650752,
-    "bytes_high": 529800364032,
+    "bytes_low": 346800783360,
+    "bytes_high": 356400496640,
     "confidence": "low",
-    "usd_low": 2.957,
-    "usd_high": 3.0116
+    "usd_low": 1.9713,
+    "usd_high": 2.0259
   }
 }
