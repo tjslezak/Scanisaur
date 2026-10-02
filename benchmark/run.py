@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 import yaml
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -34,7 +35,7 @@ from scanisaur.catalog.model import Catalog
 from scanisaur.engine.check import check
 from scanisaur.engine.estimate import MIN_BILLED_BYTES
 from scanisaur.engine.pruning import format_bytes
-from scanisaur.engine.result import CheckResult
+from scanisaur.engine.result import CheckResult, Estimate
 
 HERE = Path(__file__).parent
 TABLES = HERE / "tables.yaml"
@@ -275,6 +276,8 @@ class Outcome:
     #: What BigQuery would bill, from the dry run; None when it rejected the query.
     billed: int | None
     error: str | None
+    #: The tables the query reads, each billed at least 10 MiB.
+    tables: int = 1
 
     @property
     def found(self) -> tuple[str, ...]:
@@ -304,15 +307,34 @@ class Outcome:
         estimate = self.result.estimate
         if estimate is None or self.billed is None:
             return False
-        return estimate.bytes_low - _MIB <= self.billed <= estimate.bytes_high + _MIB
+        # Each table's bytes are rounded up to a MiB, which a dry run's total doesn't show.
+        slack = _MIB * self.tables
+        return estimate.bytes_low - slack <= self.billed <= estimate.bytes_high + slack
 
 
-def billed(processed: int) -> int:
-    """Bytes processed as BigQuery bills them: rounded up to a MiB, with a 10 MiB minimum
-    unless nothing was read."""
+def billed(processed: int, tables: int = 1) -> int:
+    """Bytes processed as BigQuery bills them: rounded up to a MiB, with 10 MiB for each
+    table read, unless nothing was read. Measured: a join of two tables that processed
+    3.9 MB billed 20 MiB, and seven shards of a wildcard table billed 10 MiB."""
     if processed == 0:
         return 0
-    return max(-(-processed // _MIB) * _MIB, MIN_BILLED_BYTES)
+    return max(-(-processed // _MIB) * _MIB, MIN_BILLED_BYTES * tables)
+
+
+def tables_read(sql: str) -> int:
+    """How many tables the query names, counting a wildcard family once and CTEs not at
+    all."""
+    try:
+        tree = sqlglot.parse_one(sql, dialect="bigquery")
+    except SqlglotError:
+        return 1
+    ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+    names = {
+        ".".join(part for part in (table.catalog, table.db, table.name) if part).lower()
+        for table in tree.find_all(exp.Table)
+        if table.db or table.name.lower() not in ctes
+    }
+    return max(len(names), 1)
 
 
 def outcomes(queries: list[Query], catalog: Catalog, runs: DryRuns) -> list[Outcome]:
@@ -323,9 +345,9 @@ def outcomes(queries: list[Query], catalog: Catalog, runs: DryRuns) -> list[Outc
         error = runs.errors.get(query.id)
         if processed is None and error is None:
             error = "not measured"
-        results.append(
-            Outcome(query, result, None if processed is None else billed(processed), error)
-        )
+        tables = tables_read(query.sql)
+        cost = None if processed is None else billed(processed, tables)
+        results.append(Outcome(query, result, cost, error, tables))
     return results
 
 
@@ -337,7 +359,8 @@ def report(results: list[Outcome], runs: DryRuns) -> str:
         f"Scanisaur's cost estimates and rules against BigQuery dry runs, measured on "
         f"{runs.measured_at:%Y-%m-%d} with `benchmark/run.py` ({len(results)} queries on public "
         "tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are "
-        "shown as BigQuery bills them: rounded up to a MiB, with a 10 MiB minimum.",
+        "shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table "
+        "read.",
         "",
         "## Cost estimate",
         "",
@@ -350,6 +373,16 @@ def report(results: list[Outcome], runs: DryRuns) -> str:
         ]
         lines.append(_estimate_row(confidence, group))
     lines.append(_estimate_row("**All**", estimated))
+    # A range comes from what metadata can't show, mostly the blocks a cluster filter skips.
+    single = [o for o in estimated if o.result.estimate and _single(o.result.estimate)]
+    ranges = [o for o in estimated if o not in single]
+    lines += [
+        "",
+        "| Estimate | Queries | High end within 3x of the bill | Range contains the bill |",
+        "| --- | --- | --- | --- |",
+        _estimate_row("One value", single),
+        _estimate_row("A range", ranges),
+    ]
     rejected = [o for o in results if o.billed is None and o.result.estimate is None]
     lines += [
         "",
@@ -387,6 +420,10 @@ def report(results: list[Outcome], runs: DryRuns) -> str:
             f"{_rules(o.query.expect)} | {_rules(o.found)} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _single(estimate: Estimate) -> bool:
+    return estimate.bytes_low == estimate.bytes_high
 
 
 def _estimate_row(label: str, group: list[Outcome]) -> str:

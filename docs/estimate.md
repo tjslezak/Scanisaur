@@ -67,12 +67,12 @@ A query's confidence is the lowest of its tables'.
 
 ## Measured assumptions
 
-Measured on 2026-10-02 with dry runs, and two real queries that billed at most 10 MiB:
+Measured on 2026-10-02 with dry runs, and four real queries that billed at most 20 MiB:
 
 | Assumption | Result |
 | --- | --- |
 | A query that prunes a table to nothing is billed nothing, not the minimum | **Holds.** Trends filtered to a date with no partition processed and billed 0 bytes. |
-| Each table read is billed at least 10 MiB | **Holds.** A query that processed 169 bytes billed 10,485,760. |
+| Each table read is billed at least 10 MiB | **Holds.** A query that processed 169 bytes billed 10,485,760. A join of two tables that processed 3.9 MB billed 20 MiB. Seven shards of a wildcard table that processed 3.2 MB billed 10 MiB: a wildcard family counts as one table. |
 | `_TABLE_SUFFIX != '…'` and `NOT LIKE` skip the shards they rule out | **Holds.** GA4's shards: 55.95 MB in all, 55.61 MB with `!= '20210131'`, 40.39 MB with `NOT LIKE '202101%'`. |
 | An outer `LIMIT 0` reads nothing | **Holds.** It processed 0 bytes, and the estimate now gives 0. |
 | BigQuery bills the whole struct column | **Doesn't hold.** `device.category` processed 227 KB against 1.92 MB for all of `device`. The estimate bills the whole column, so it overestimates queries that read struct fields, 8.4x here. |

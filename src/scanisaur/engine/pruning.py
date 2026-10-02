@@ -64,6 +64,9 @@ def pruning_findings(facts: QueryFacts) -> list[Finding]:
     A problem found at several references, such as two unfiltered UNION branches, is
     reported once, at the first.
     """
+    if facts.outer_limit == 0:
+        # Measured: BigQuery reads nothing, and doesn't require the partition filter.
+        return []
     candidates = [finding for table in facts.tables for finding in _table_findings(table)]
     candidates.sort(key=lambda f: (f.line or 0, f.column or 0, f.rule))
     unique: dict[tuple[str, str], Finding] = {}

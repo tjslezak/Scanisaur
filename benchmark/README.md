@@ -4,7 +4,7 @@ This checks Scanisaur against BigQuery itself, on public tables, using free dry 
 
 It measures two things:
 
-- **Cost estimate:** for each query, Scanisaur's estimate against the bytes the dry run reports, shown as BigQuery bills them: rounded up to a MiB, with a 10 MiB minimum. The milestone target is at least 80% of queries within 3x.
+- **Cost estimate:** for each query, Scanisaur's estimate against the bytes the dry run reports, shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read (a wildcard family counts as one). The milestone target is at least 80% of queries within 3x.
 - **Rules:** each query lists the rules that should fire (`expect` in `queries.yaml`). Traps should be caught, and their fixes should pass.
 
 The results are in [docs/benchmark.md](../docs/benchmark.md).

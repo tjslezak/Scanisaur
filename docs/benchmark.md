@@ -1,6 +1,6 @@
 # Dry-run benchmark
 
-Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (62 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with a 10 MiB minimum.
+Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (62 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read.
 
 ## Cost estimate
 
@@ -8,8 +8,13 @@ Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026
 | --- | --- | --- | --- |
 | high | 4 | 4 (100%) | 4 (100%) |
 | medium | 51 | 27 (53%) | 30 (59%) |
-| low | 4 | 3 (75%) | 2 (50%) |
-| **All** | 59 | 34 (58%) | 36 (61%) |
+| low | 4 | 3 (75%) | 4 (100%) |
+| **All** | 59 | 34 (58%) | 38 (64%) |
+
+| Estimate | Queries | High end within 3x of the bill | Range contains the bill |
+| --- | --- | --- | --- |
+| One value | 36 | 31 (86%) | 16 (44%) |
+| A range | 23 | 3 (13%) | 22 (96%) |
 
 3 queries that BigQuery rejected have no estimate, as intended.
 
@@ -18,11 +23,7 @@ Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026
 | Queries | Count | As expected |
 | --- | --- | --- |
 | Traps (a rule should fire) | 22 | 22 |
-| Others (no rule should fire) | 40 | 39 |
-
-Mismatches:
-
-- `trends-limit-zero`: expected none, found SCN003
+| Others (no rule should fire) | 40 | 40 |
 
 ## Every query
 
@@ -41,7 +42,7 @@ Mismatches:
 | `trends-preview` | 99.6 MB | 99.6 MB (medium) | 1.00 | none | none |
 | `trends-preview-every-partition` | 3.1 GB | 3.1 GB (medium) | 1.00 | SCN003, SCN005 | SCN003, SCN005 |
 | `trends-star-except` | 2.8 GB | 2.8 GB (medium) | 1.00 | SCN003, SCN005 | SCN003, SCN005 |
-| `trends-limit-zero` | 0 B | 0 B (high) | 1.00 | none | SCN003 |
+| `trends-limit-zero` | 0 B | 0 B (high) | 1.00 | none | none |
 | `trends-count-star` | 0 B | 0 B (high) | 1.00 | none | none |
 | `trends-group-by` | 39.8 MB | 33.6 MB (medium) | 0.84 | none | none |
 | `trends-having-on-partition-column` | 11.5 MB | 11.5 MB (high) | 1.00 | none | none |
@@ -82,11 +83,11 @@ Mismatches:
 | `ga4-struct-field` | 10.5 MB | 56.6 MB (medium) | 5.40 ** | none | none |
 | `ga4-suffix-not-equal` | 56.6 MB | 208.7 MB (medium) | 3.69 ** | SCN003 | SCN003 |
 | `ga4-suffix-from-format-date` | 0 B | 0 B (high) | 1.00 | none | none |
-| `thelook-order-totals` | 10.5 MB | 21 MB (low) | 2.00 | none | none |
+| `thelook-order-totals` | 21 MB | 21 MB (low) | 1.00 | none | none |
 | `thelook-users-preview` | 19.9 MB | 19.9 MB (medium) | 1.00 | none | none |
 | `thelook-events-preview` | 386.9 MB | 386.9 MB (medium) | 1.00 | none | none |
 | `thelook-monthly-average` | 10.5 MB | 10.5 MB (low) | 1.00 | none | none |
-| `thelook-orders-by-country` | 10.5 MB | 21 MB (low) | 2.00 | none | none |
+| `thelook-orders-by-country` | 21 MB | 21 MB (low) | 1.00 | none | none |
 | `mix-trending-articles` | 1.5 GB | 54.5 MB to 8.1 GB (medium) | 5.37 ** | none | none |
 | `mix-trends-unfiltered` | 2.6 GB | 1 GB to 9.1 GB (medium) | 3.45 ** | SCN003 | SCN003 |
 | `mix-pageviews-unfiltered` | rejected: can be used for partition elimination | none | - | SCN003 | SCN003 |

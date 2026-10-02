@@ -196,6 +196,11 @@ tables:
     columns: {day: DATE, n: INT64}
     partitions: {'20260929': 8589934592, '20260930': 8589934592}
 """
+    SMALL = """  - name: o.d.s
+    rows: 10
+    bytes: 80
+    columns: {n: INT64}
+"""
 
     def outcomes(
         self, tmp_path: Path, bytes_: dict[str, int], errors: dict[str, str]
@@ -228,6 +233,8 @@ tables:
         results = self.outcomes(tmp_path, {"one-day": 2**30, "count": 0}, {"all": "rejected"})
         text = run.report(results, run.DryRuns(measured_at=NOW))
         assert "| **All** | 2 | 1 (50%) | 1 (50%) |" in text  # one-day is 8x over, count exact
+        assert "| One value | 2 | 1 (50%) | 1 (50%) |" in text
+        assert "| A range | 0 | - | - |" in text
         assert "| `one-day` | 1.1 GB | 8.6 GB (high) | 8.00 ** | none | none |" in text
         assert "| `all` | rejected: rejected | none | - | SCN003 | SCN003 |" in text
         assert "1 queries that BigQuery rejected have no estimate" in text
@@ -254,6 +261,34 @@ tables:
             MIN_BILLED_BYTES,
             12 * 2**20,
         )
+        # Each table read is billed at least 10 MiB.
+        assert run.billed(3_911_816, tables=2) == 2 * MIN_BILLED_BYTES
+        assert run.billed(0, tables=2) == 0
+        assert run.billed(30 * 2**20, tables=2) == 30 * 2**20
+
+    @pytest.mark.parametrize(
+        ("sql", "tables"),
+        [
+            ("SELECT n FROM `o.d.t`", 1),
+            ("SELECT a.n FROM `o.d.t` AS a JOIN `o.d.u` AS b USING (n)", 2),
+            ("SELECT a.n FROM `o.d.t` AS a JOIN `o.d.t` AS b USING (n)", 1),  # a self-join
+            ("WITH t AS (SELECT n FROM `o.d.u`) SELECT n FROM t UNION ALL SELECT n FROM t", 1),
+            ("SELECT COUNT(*) FROM `o.d.events_*` WHERE _TABLE_SUFFIX > '2026'", 1),
+            ("SELECT 1", 1),
+            ("not SQL (", 1),
+        ],
+    )
+    def test_tables_read(self, sql: str, tables: int) -> None:
+        assert run.tables_read(sql) == tables
+
+    def test_minimum_is_per_table(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.yaml"
+        path.write_text(self.CATALOG + self.SMALL, encoding="utf-8")
+        sql = "SELECT a.n FROM `o.d.t` AS a JOIN `o.d.s` AS b USING (n) WHERE a.day = '2026-09-30'"
+        query = run.Query("join", sql)
+        runs = run.DryRuns(measured_at=NOW, bytes={"join": 1000})
+        (outcome,) = run.outcomes([query], load_catalog(path), runs)
+        assert (outcome.tables, outcome.billed) == (2, 2 * MIN_BILLED_BYTES)
 
     def test_report_command(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         paths = {
