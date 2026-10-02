@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from sqlglot import exp
-from sqlglot.dialects.dialect import Dialect
-from sqlglot.errors import TokenError
 
 from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.parse import (
@@ -35,8 +33,9 @@ _ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 _RANDOM_BITS = 40
 #: 100 bits: collisions are negligible for any one project's query history.
 _FINGERPRINT_DIGITS = 20
-#: A tracking tag already in the SQL, removed before fingerprinting SQL that can't be tokenized.
-_TAG = re.compile(r"/\*\s*scanisaur:[^*]*\*/")
+#: A tracking tag at the start or end of the SQL, where agents add it.
+_LEADING_TAG = re.compile(r"\A\s*/\*\s*scanisaur:[0-9a-z_]+\s*\*/")
+_TRAILING_TAG = re.compile(r"/\*\s*scanisaur:[0-9a-z_]+\s*\*/\s*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,29 +141,32 @@ def new_check_id(now_ms: int | None = None, randomness: int | None = None) -> st
 
 
 def fingerprint(sql: str) -> str:
-    """Identify a query by its tokens, ignoring whitespace and comments.
+    """Identify a query by its exact text.
 
-    Comments include an earlier tracking tag, so re-checking tagged SQL gives the same
-    fingerprint.
+    Tracking tags at the start or end, and the whitespace around the query, are left out,
+    so re-checking tagged SQL gives the same fingerprint. Any other change counts, comments
+    included: BigQuery serves cached results only for identical text, and a comment such as
+    ``#legacySQL`` can change what the query means.
     """
-    try:
-        tokens = Dialect.get_or_raise(DIALECT).tokenize(sql)
-    except TokenError:
-        canonical = " ".join(_TAG.sub(" ", sql).split())
-    else:
-        # The token type keeps 'a' (a string) apart from `a` (a name).
-        canonical = "\x1e".join(f"{token.token_type.name}\x1f{token.text}" for token in tokens)
+    text = sql
+    while True:  # an agent may have added more than one tag
+        untagged = _TRAILING_TAG.sub("", _LEADING_TAG.sub("", text))
+        if untagged == text:
+            break
+        text = untagged
     # surrogatepass: SQL decoded from JSON can hold an unpaired surrogate.
-    data = canonical.encode("utf-8", "surrogatepass")
+    data = text.strip().encode("utf-8", "surrogatepass")
     digest = int.from_bytes(hashlib.sha256(data).digest(), "big")
     return "q_" + _base32(digest >> (256 - 5 * _FINGERPRINT_DIGITS), _FINGERPRINT_DIGITS)
 
 
 def tag_for(sql: str) -> str:
-    """The SQL comment an agent adds to the query it runs.
+    """The SQL comment an agent adds at the start or end of the query it runs.
 
     It depends only on the SQL, so a repeated query keeps the same text and BigQuery can
-    serve it from its cache. A tag unique to each check would make every run a cache miss.
+    serve it from its cache; a tag unique to each check would make every run a cache miss.
+    It identifies the query, not one check, and doesn't prove a check happened: audit
+    matches it against Scanisaur's record of checks and their times.
     """
     return f"/* scanisaur:{fingerprint(sql)} */"
 

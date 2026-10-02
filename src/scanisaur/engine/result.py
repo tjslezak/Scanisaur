@@ -43,6 +43,7 @@ class CheckResult(BaseModel):
     check_id: str
     #: SQL comment to include in the executed query, so it can be matched in query history.
     #: The same SQL always gets the same tag, so repeated queries can use BigQuery's cache.
+    #: It identifies the query, not this check; ``check_id`` identifies the check.
     tag: str
     verdict: Verdict
     findings: tuple[Finding, ...] = ()

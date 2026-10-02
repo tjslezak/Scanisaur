@@ -42,40 +42,37 @@ class TestTag:
     @pytest.mark.parametrize(
         "same",
         [
-            "SELECT  user_id\nFROM events\nWHERE event_date = '2026-09-01'\n",
-            "SELECT user_id -- who\nFROM events # where\nWHERE event_date = '2026-09-01'",
-            "/* note */ SELECT user_id FROM events WHERE event_date = '2026-09-01'",
+            f"  {SQL}\n",
+            f"{SQL} /* scanisaur:q_p9j93wazgxbtjn0zmf45 */",
+            f"/* scanisaur:q_p9j93wazgxbtjn0zmf45 */\n{SQL}",
+            f"/*scanisaur:chk_01m3wk05rsjdxrp063*/ {SQL} /* scanisaur:q_a */ /* scanisaur:q_b */\n",
         ],
     )
-    def test_ignores_whitespace_and_comments(self, same: str) -> None:
+    def test_ignores_surrounding_tags_and_whitespace(self, same: str) -> None:
         assert fingerprint(same) == fingerprint(self.SQL)
 
-    def test_ignores_an_earlier_tag(self) -> None:
-        tag = tag_for(self.SQL)
-        assert fingerprint(f"{self.SQL} {tag}") == fingerprint(self.SQL)
-        assert fingerprint(f"{tag}\n{self.SQL}") == fingerprint(self.SQL)
+    def test_retagging_keeps_the_tag(self) -> None:
+        for sql in (self.SQL, "CALL ds.proc(1)", "BEGIN SELECT 1; END", "SELECT 'unterminated"):
+            assert tag_for(f"{sql} {tag_for(sql)}") == tag_for(sql)
 
     @pytest.mark.parametrize(
-        "different",
+        ("sql", "other"),
         [
-            "SELECT user_id FROM events WHERE event_date = '2026-09-02'",
-            "SELECT user_id FROM Events WHERE event_date = '2026-09-01'",
-            "SELECT user_id FROM events WHERE event_date = `2026-09-01`",
-            "SELECT user_id FROM events WHERE event_date = 2026-09-01",
+            # Each pair runs differently, or misses BigQuery's cache, so the tags differ.
+            ("SELECT  user_id FROM events", "SELECT user_id FROM events"),
+            ("SELECT user_id FROM events -- note", "SELECT user_id FROM events"),
+            ("#legacySQL\nSELECT a FROM [p:d.t]", "SELECT a FROM [p:d.t]"),
+            (r"SELECT 'a\x41'", r"SELECT 'a\\x41'"),
+            ("SELECT 'x\x1eVAR\x1fy'", "SELECT 'x' y"),
+            ("SELECT '/* scanisaur:q_x */'", "SELECT ''"),
+            ("SELECT user_id FROM Events", "SELECT user_id FROM events"),
         ],
     )
-    def test_any_token_change_counts(self, different: str) -> None:
-        assert fingerprint(different) != fingerprint(self.SQL)
+    def test_any_other_change_counts(self, sql: str, other: str) -> None:
+        assert fingerprint(sql) != fingerprint(other)
 
     def test_unpaired_surrogate(self) -> None:
         assert FINGERPRINT.match(fingerprint("SELECT '\ud800'"))
-
-    def test_sql_that_cannot_be_tokenized(self) -> None:
-        sql = "SELECT 'unterminated"
-        assert FINGERPRINT.match(fingerprint(sql))
-        assert fingerprint(f"{sql}  ") == fingerprint(sql)
-        assert fingerprint(f"/* scanisaur:q_x */ {sql}") == fingerprint(sql)
-        assert fingerprint(sql) != fingerprint("SELECT 'unterminated other")
 
 
 class TestCheck:
