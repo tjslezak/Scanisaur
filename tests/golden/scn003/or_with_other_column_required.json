@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "block",
+      "message": "`proj.analytics.Orders` is partitioned by `order_date`, but `order_date = '2026-09-30' OR amount > 0` can't limit which partitions are read. BigQuery rejects queries on this table unless a filter on `order_date` can limit the partitions.",
+      "fix": "Add a filter on `order_date`, for example `order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 22
+    }
+  ],
+  "tables": [
+    "proj.analytics.Orders"
+  ]
+}

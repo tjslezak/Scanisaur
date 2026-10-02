@@ -113,6 +113,8 @@ def _rule_findings(resolution: Resolution, policy: Policy) -> list[Finding]:
     try:
         facts = extract(resolution)
     except TooComplexError as error:
+        if not any(t.partitioning or t.clustering or t.is_wildcard for t in resolution.tables):
+            return []  # no rule could apply
         message = f"Partition filters weren't checked: {error}."
         return [_unanalyzable(policy, message, "Check the partition filters by hand.")]
     except FactsError:

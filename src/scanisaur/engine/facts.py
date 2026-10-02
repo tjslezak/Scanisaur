@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, NamedTuple
 
 from sqlglot import exp
@@ -25,7 +25,7 @@ from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, posi
 from scanisaur.engine.resolve import Resolution, ResolveError, TableKey, resolve, stars_of
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
-Clause = Literal["where", "on", "qualify"]
+Clause = Literal["where", "on", "having", "qualify"]
 
 _COMPARISONS: dict[type[exp.Expr], ComparisonOp] = {
     exp.EQ: "=",
@@ -114,8 +114,9 @@ class TableFacts:
     #: The table name as the query wrote it. It differs from ``table.name`` when a narrower
     #: wildcard such as ``events_2026*`` reads part of the ``events_*`` family.
     name: str = ""
-    #: Where the query reads the table, as (line, column).
-    position: tuple[int | None, int | None] = (None, None)
+    #: Where the query reads the table, as (line, column). Not compared, so identical facts
+    #: read from several places still merge, keeping the first place.
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,12 +217,17 @@ class _Walk:
                 self._visit(scope, item, runs)
 
     def table_facts(self) -> tuple[TableFacts, ...]:
-        """Identical facts from several paths become one entry with their scans added."""
+        """Identical facts from several paths become one entry with their scans added,
+        at the earliest position any of them is written."""
         scans: dict[TableFacts, int] = {}
+        first: dict[TableFacts, TableFacts] = {}
         for facts in self._visited:
             unscanned = replace(facts, scans=0)
             scans[unscanned] = scans.get(unscanned, 0) + facts.scans
-        return tuple(replace(facts, scans=count) for facts, count in scans.items())
+            seen = first.get(unscanned)
+            if seen is None or _sort_key(facts.position) < _sort_key(seen.position):
+                first[unscanned] = facts
+        return tuple(replace(first[facts], scans=count) for facts, count in scans.items())
 
     def _schedule(
         self, scope: Scope, needed: frozenset[str] | None, pushed: Iterable[_Pushed], runs: int
@@ -378,6 +384,12 @@ class _Walk:
         return tables, derived, names, positions
 
 
+def _sort_key(position: tuple[int | None, int | None]) -> tuple[float, float]:
+    """Order positions as written; an unknown position sorts last."""
+    line, column = position
+    return (line if line is not None else float("inf"), column if column is not None else 0)
+
+
 def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[str]]]:
     """Each join, with the sources joined before it."""
     earlier = {_from_alias(select)}
@@ -387,7 +399,9 @@ def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[st
 
 
 def _conditions(select: exp.Select) -> Iterator[tuple[Clause, exp.Expr, frozenset[str] | None]]:
-    """Each conjunct of WHERE, ON and QUALIFY, with the sources it can filter (None: any)."""
+    """Each conjunct of WHERE, ON, HAVING and QUALIFY, with the sources it can filter
+    (None: any). Only HAVING conditions on grouping columns count: BigQuery applies them
+    before grouping, so they can prune partitions."""
     where = select.args.get("where")
     if where is not None:
         yield from (("where", c, None) for c in _conjuncts(where.this))
@@ -399,9 +413,26 @@ def _conditions(select: exp.Select) -> Iterator[tuple[Clause, exp.Expr, frozense
             "FULL": frozenset(),
         }.get(join.side)
         yield from (("on", c, filtered) for c in _conjuncts(join.args.get("on")))
+    yield from (("having", c, None) for c in _grouping_filters(select))
     qualify = select.args.get("qualify")
     if qualify is not None:
         yield from (("qualify", c, None) for c in _conjuncts(qualify.this))
+
+
+def _grouping_filters(select: exp.Select) -> Iterator[exp.Expr]:
+    """HAVING conjuncts that test only plain GROUP BY columns, without aggregates."""
+    having, group = select.args.get("having"), select.args.get("group")
+    if having is None or group is None:
+        return
+    if any(group.args.get(key) for key in ("rollup", "cube", "grouping_sets")):
+        return  # rolled-up rows add NULL keys the filter also sees
+    keys = {_key(c) for c in group.expressions if isinstance(c, exp.Column)}
+    for condition in _conjuncts(having.this):
+        columns = _local_columns(condition)
+        if not columns or any(_key(c) not in keys for c in columns):
+            continue
+        if condition.find(exp.AggFunc, exp.Window) is None:
+            yield condition
 
 
 def _null_supplying(select: exp.Select) -> frozenset[str]:
