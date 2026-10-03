@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `nope` does not exist in `n`.",
+      "fix": "Columns of `n`: `n`.",
+      "line": 2,
+      "column": 11
+    }
+  ],
+  "tables": []
+}
