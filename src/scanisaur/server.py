@@ -10,7 +10,7 @@ import contextlib
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
@@ -20,7 +20,7 @@ from scanisaur import __version__, tools
 from scanisaur.catalog.source import CatalogSource
 from scanisaur.engine.check import Policy
 from scanisaur.engine.result import CheckResult
-from scanisaur.hook import claude_output, sql_from
+from scanisaur.hook import CheckJson, claude_output, sql_from
 from scanisaur.listener import hook_listener
 
 #: Sent when a client connects. The agent evaluation (#10) tunes these words.
@@ -108,8 +108,8 @@ def build_server(
         found = sql_from(sql, command)
         if found is None:
             return CallToolResult(content=[TextContent(type="text", text="")])
-        result = tools.check_sql(found, source.current(), policy).model_dump(mode="json")
-        output = claude_output(result)
+        result = tools.check_sql(found, source.current(), policy)
+        output = claude_output(cast(CheckJson, result.model_dump(mode="json")))
         text = "" if output is None else json.dumps(output)
         return CallToolResult(content=[TextContent(type="text", text=text)])
 

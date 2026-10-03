@@ -24,7 +24,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 #: Bump on any change to the request or response a client could depend on.
 PROTOCOL_VERSION = 1
@@ -44,6 +44,29 @@ READ_TIMEOUT = 2.0
 MAX_RESPONSE = 1 << 20
 
 JsonObject = dict[str, Any]
+#: The agent harness a hook answers.
+HookFormat = Literal["claude", "cursor"]
+
+
+class FindingJson(TypedDict):
+    """A finding as the check result's JSON carries it (see ``engine.result.Finding``)."""
+
+    rule: str
+    severity: str
+    message: str
+    fix: NotRequired[str | None]
+    line: NotRequired[int | None]
+    column: NotRequired[int | None]
+
+
+class CheckJson(TypedDict):
+    """The parts of a check result's JSON a hook reads. The pydantic model isn't used
+    here because importing it would slow every hook call."""
+
+    verdict: Literal["pass", "warn", "block"]
+    findings: list[FindingJson]
+    #: The catalog snapshot the check ran against; set by ``scanisaur serve``.
+    snapshot_id: NotRequired[str | None]
 
 
 def socket_path(catalog: Path, config: Path | None) -> Path:
@@ -169,7 +192,7 @@ def private_dir(path: Path) -> bool:
     return owned and stat.S_ISDIR(info.st_mode) and info.st_mode & 0o077 == 0
 
 
-def request_check(path: Path, sql: str) -> JsonObject | None:
+def request_check(path: Path, sql: str) -> CheckJson | None:
     """Ask the server at ``path``; None when no server answers."""
     if not hasattr(socket, "AF_UNIX") or not private_dir(path.parent):
         return None  # Windows has no local sockets in v0.1
@@ -187,7 +210,9 @@ def request_check(path: Path, sql: str) -> JsonObject | None:
         answer = json.loads(response)
     except ValueError:
         return None
-    return answer if isinstance(answer, dict) and "verdict" in answer else None
+    if not isinstance(answer, dict) or answer.get("verdict") not in ("pass", "warn", "block"):
+        return None
+    return cast(CheckJson, answer)
 
 
 def _read_line(client: socket.socket) -> bytes:
@@ -204,18 +229,18 @@ def _read_line(client: socket.socket) -> bytes:
     return b"".join(chunks)
 
 
-def check_here(sql: str, catalog: Path, config: Path | None) -> JsonObject:
+def check_here(sql: str, catalog: Path, config: Path | None) -> CheckJson:
     """Check without a server. Imports the engine, so it costs a few hundred ms."""
     from scanisaur.catalog.fixtures import load_catalog
     from scanisaur.config import load_policy
     from scanisaur.engine.check import DEFAULT_POLICY, check
 
     policy = DEFAULT_POLICY if config is None else load_policy(config)
-    result: JsonObject = check(sql, load_catalog(catalog), policy=policy).model_dump(mode="json")
-    return result
+    result = check(sql, load_catalog(catalog), policy=policy)
+    return cast(CheckJson, result.model_dump(mode="json"))
 
 
-def claude_output(result: JsonObject) -> JsonObject | None:
+def claude_output(result: CheckJson) -> JsonObject | None:
     """Claude Code's ``PreToolUse`` answer for a check result.
 
     Pass says nothing. Warn adds the findings to the agent's context. Block denies the
@@ -232,7 +257,7 @@ def claude_output(result: JsonObject) -> JsonObject | None:
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", **decision}}
 
 
-def cursor_output(result: JsonObject) -> JsonObject | None:
+def cursor_output(result: CheckJson) -> JsonObject | None:
     """Cursor's answer for a check result: deny on block, findings for the agent on warn."""
     verdict = result.get("verdict")
     if verdict == "block":
@@ -243,7 +268,7 @@ def cursor_output(result: JsonObject) -> JsonObject | None:
     return None
 
 
-def unchecked_output(reason: str, output_format: str = "claude") -> JsonObject:
+def unchecked_output(reason: str, output_format: HookFormat = "claude") -> JsonObject:
     """The answer when the SQL couldn't be checked: let it run, and say so."""
     context = f"Scanisaur couldn't check this SQL ({reason}), so it ran unchecked."
     if output_format == "cursor":
@@ -251,7 +276,7 @@ def unchecked_output(reason: str, output_format: str = "claude") -> JsonObject:
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}
 
 
-def _explain(result: JsonObject) -> str:
+def _explain(result: CheckJson) -> str:
     findings = result.get("findings") or []
     lines = [f"Scanisaur: {result.get('verdict')}, {len(findings)} finding(s)."]
     for finding in findings:
@@ -286,7 +311,10 @@ def adk_callback(
         if result is None:
             try:
                 result = check_here(sql, catalog, config)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as error:
+                import logging  # only on this path: the hook command doesn't need it
+
+                logging.getLogger(__name__).warning("SQL ran unchecked: %s", error)
                 return None  # fail open, as the command does
         return {"error": _explain(result)} if result.get("verdict") == "block" else None
 

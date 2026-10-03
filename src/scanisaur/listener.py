@@ -42,7 +42,7 @@ async def hook_listener(
         log.warning("not answering hooks: %s isn't private to this user", path.parent)
         yield None
         return
-    if _in_use(path):
+    if await _in_use(path):
         yield None
         return
     path.unlink(missing_ok=True)  # left behind by a server that didn't shut down cleanly
@@ -88,12 +88,13 @@ def _respond(line: bytes, source: CatalogSource, policy: Policy) -> str:
     return result.model_copy(update={"snapshot_id": snapshot.snapshot_id}).model_dump_json()
 
 
-def _in_use(path: Path) -> bool:
+async def _in_use(path: Path) -> bool:
     """True when a server is answering on ``path``."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.1)
-        try:
-            probe.connect(str(path))
-        except OSError:
-            return False
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(path)), 0.1)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
     return True

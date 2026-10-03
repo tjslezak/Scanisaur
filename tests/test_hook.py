@@ -19,6 +19,8 @@ from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE
 from scanisaur.engine.check import Policy
 from scanisaur.hook import (
+    CheckJson,
+    FindingJson,
     adk_callback,
     bq_query_sql,
     claude_output,
@@ -128,7 +130,7 @@ class TestClaudeOutput:
         assert claude_output({"verdict": "pass", "findings": []}) is None
 
     def test_warn_adds_context_without_allowing(self) -> None:
-        finding = {"rule": "SCN005", "severity": "warn", "message": "SELECT *.", "fix": None}
+        finding: FindingJson = {"rule": "SCN005", "severity": "warn", "message": "SELECT *."}
         output = claude_output({"verdict": "warn", "findings": [finding]})
         assert output == {
             "hookSpecificOutput": {
@@ -138,7 +140,12 @@ class TestClaudeOutput:
         }
 
     def test_block_denies_with_fixes(self) -> None:
-        finding = {"rule": "SCN001", "severity": "block", "message": "No.", "fix": "Use x."}
+        finding: FindingJson = {
+            "rule": "SCN001",
+            "severity": "block",
+            "message": "No.",
+            "fix": "Use x.",
+        }
         output = claude_output({"verdict": "block", "findings": [finding]})
         assert output is not None
         decision = output["hookSpecificOutput"]
@@ -162,8 +169,8 @@ class TestSocketPath:
 
 
 class TestListener:
-    def _round_trip(self, sock: Path, sql: str) -> dict[str, Any] | None:
-        async def run() -> dict[str, Any] | None:
+    def _round_trip(self, sock: Path, sql: str) -> CheckJson | None:
+        async def run() -> CheckJson | None:
             async with hook_listener(sock, SOURCE, Policy()) as server:
                 assert server is not None
                 assert sock.stat().st_mode & 0o777 == 0o600
@@ -224,7 +231,7 @@ class TestListener:
         asyncio.run(run())
 
     def test_client_skips_a_shared_directory(self, sock: Path) -> None:
-        async def run() -> dict[str, Any] | None:
+        async def run() -> CheckJson | None:
             async with hook_listener(sock, SOURCE, Policy()):
                 sock.parent.chmod(0o755)
                 return await asyncio.to_thread(request_check, sock, GOOD_SQL)
@@ -324,7 +331,7 @@ class TestCursor:
         assert extract_sql({"tool_name": "execute_sql", "tool_input": "{nope"}) is None
 
     def test_outputs(self) -> None:
-        finding = {"rule": "SCN001", "severity": "block", "message": "No.", "fix": None}
+        finding: FindingJson = {"rule": "SCN001", "severity": "block", "message": "No."}
         assert cursor_output({"verdict": "pass", "findings": []}) is None
         warn = cursor_output({"verdict": "warn", "findings": [finding]})
         assert warn is not None
