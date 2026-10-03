@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
@@ -26,6 +27,8 @@ from scanisaur.errors import ScanisaurError
 SCHEMA_VERSION = 1
 
 _TABLE_JSON = TypeAdapter(Table)
+#: How long to keep retrying a journal-mode switch that finds the file locked.
+_LOCK_WAIT_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -212,13 +215,30 @@ class MetadataCache:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(self.path)) as db:
-                db.execute("PRAGMA journal_mode = WAL")
+                _use_wal(db)
                 db.execute("PRAGMA foreign_keys = ON")
                 if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                     _rebuild(db)
                 yield db
         except sqlite3.Error as error:
             raise CacheError(f"{self.path}: {error}") from error
+
+
+def _use_wal(db: sqlite3.Connection) -> None:
+    """Switch to WAL, retrying while another connection holds the lock.
+
+    Changing the journal mode doesn't wait for a lock the way other statements do, so
+    connections opening a new file at once can see "database is locked".
+    """
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
+        try:
+            db.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error) or time.monotonic() > deadline:
+                raise
+            time.sleep(0.01)
 
 
 def _rebuild(db: sqlite3.Connection, *, force: bool = False) -> None:
