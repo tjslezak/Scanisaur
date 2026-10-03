@@ -15,7 +15,8 @@ The unit is the leaf field: BigQuery bills ``device.category`` without the rest 
   anything up to all of it.
 - **Clustering:** a filter on a cluster column may skip blocks that metadata can't see, so
   the table's estimate is an upper bound.
-- **Minimum:** each table read is billed at least 10 MB.
+- **Minimum:** each table read is billed at least 10 MiB, and so is a table that reads no
+  columns once another table bills anything.
 """
 
 from __future__ import annotations
@@ -132,17 +133,25 @@ def estimate(
         return Estimate(bytes_low=0, bytes_high=0, confidence="high", usd_low=free, usd_high=free)
     now = _naive_utc(now)
     low = high = 0
+    unread = 0
     confidence: Confidence = "high"
     for name, references in by_table.items():
-        result = _table_estimate(references, now)
+        result = _table_cost(references, now)
         if result is None:
             return None
-        table_low, table_high, table_confidence = result
+        table_low, table_high, table_confidence, reads_columns = result
+        unread += not reads_columns
         if name in sampled and table_high:
             table_low = MIN_BILLED_BYTES
             table_confidence = "low"
         low, high = low + table_low, high + table_high
         confidence = min(confidence, table_confidence, key=_RANK.__getitem__)
+    # Measured (#26): with another table to read, BigQuery bills its minimum for a table
+    # the query reads no columns of. Alone, as in `SELECT COUNT(*)`, such a table is free.
+    if low:
+        low += unread * MIN_BILLED_BYTES
+    if high:
+        high += unread * MIN_BILLED_BYTES
     usd_low = usd_high = None
     if price_per_tib is not None:
         usd_low = round(low / _TIB * price_per_tib, 4)
@@ -194,13 +203,16 @@ def table_estimate(
 ) -> tuple[int, int, Confidence] | None:
     """Billed bytes (low, high) and confidence for one table read by ``references``; None
     when it can't be estimated, as ``estimate`` says."""
-    return _table_estimate(references, _naive_utc(now))
+    result = _table_cost(references, _naive_utc(now))
+    return None if result is None else result[:3]
 
 
-def _table_estimate(
+def _table_cost(
     references: list[TableFacts], now: datetime
-) -> tuple[int, int, Confidence] | None:
-    """Billed bytes (low, high) and confidence for one table, over all its references."""
+) -> tuple[int, int, Confidence, bool] | None:
+    """Billed bytes (low, high) and confidence for one table, over all its references, and
+    whether any reference reads a column of it. A table that reads none bills nothing
+    here: whether it bills its minimum depends on the query's other tables."""
     table = references[0].table
     size = table.size_bytes
     if size is None or not _estimable(table):
@@ -214,10 +226,12 @@ def _table_estimate(
     high_leaves: dict[str, set[_Leaf]] = {}
     low_leaves: dict[str, set[_Leaf]] = {}
     confidence: Confidence = "high"
+    reads_columns = False
     for reference in references:
         read = _read(reference, layout, units, domain)
         if not read.leaves:
             continue  # e.g. COUNT(*), answered from metadata
+        reads_columns = True
         for unit in read.high:
             high_leaves.setdefault(unit, set()).update(read.leaves)
         for unit in read.low:
@@ -225,9 +239,10 @@ def _table_estimate(
         ranks = [read.confidence, *(layout.confidence[leaf] for leaf in read.leaves)]
         confidence = min(confidence, *ranks, key=_RANK.__getitem__)
     if not any(units[unit] for unit in high_leaves):
-        return 0, 0, confidence  # nothing to read: no columns, or empty partitions
+        return 0, 0, confidence, reads_columns  # no columns, or empty partitions
     low = billed_bytes(_scanned(low_leaves, units, layout.shares))
-    return low, billed_bytes(_scanned(high_leaves, units, layout.shares)), confidence
+    high = billed_bytes(_scanned(high_leaves, units, layout.shares))
+    return low, high, confidence, reads_columns
 
 
 def _estimable(table: Table) -> bool:
