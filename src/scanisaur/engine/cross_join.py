@@ -12,41 +12,55 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from datetime import datetime
+from typing import NamedTuple, assert_never
 
 from scanisaur.engine.estimate import table_rows
 from scanisaur.engine.facts import DerivedSource, Product, QueryFacts, TableFacts
 from scanisaur.engine.result import Finding, Severity
 from scanisaur.engine.rules import CROSS_JOIN
 
-#: Rows of one group of sources: at most this many (None: any number), and whether that
-#: count is the real one rather than an upper bound.
-_Size = tuple[int | None, bool]
+_Member = TableFacts | DerivedSource
+
+
+class _Size(NamedTuple):
+    """Rows of one group of sources."""
+
+    #: At most this many; None when it may be any number.
+    rows: int | None
+    #: True when ``rows`` is the count itself rather than an upper bound.
+    exact: bool
 
 
 def cross_join_findings(
-    facts: QueryFacts, now: datetime, *, warn_pairs: int, block_pairs: int
+    facts: QueryFacts,
+    now: datetime,
+    *,
+    warn_pairs: int,
+    block_pairs: int,
+    sampled: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """One finding per SELECT whose sources nothing connects. It blocks from
     ``block_pairs`` pairs when every side's size is known, and otherwise warns from
-    ``warn_pairs``, or whenever a side may hold any number of rows."""
-    findings: dict[str, Finding] = {}
+    ``warn_pairs``, or whenever a side may hold any number of rows. ``sampled`` names the
+    tables read with TABLESAMPLE, whose rows are a fraction of their count."""
+    findings: dict[tuple[str, int | None, int | None], Finding] = {}
     for product in facts.products:
-        finding = _finding(product, now, warn_pairs, block_pairs)
-        if finding is not None:
-            findings.setdefault(finding.message, finding)
+        finding = _finding(product, now, warn_pairs, block_pairs, sampled)
+        if finding is not None:  # several visits of one SELECT give one finding
+            findings.setdefault((finding.message, finding.line, finding.column), finding)
     return list(findings.values())
 
 
-def _finding(product: Product, now: datetime, warn_pairs: int, block_pairs: int) -> Finding | None:
-    sizes = [_group_size(group, product, now) for group in product.groups]
-    bounds = [bound for bound, _exact in sizes]
-    pairs = math.prod(b for b in bounds if b is not None) if None not in bounds else None
-    exact = all(is_exact for _bound, is_exact in sizes)
+def _finding(
+    product: Product, now: datetime, warn_pairs: int, block_pairs: int, sampled: frozenset[str]
+) -> Finding | None:
+    sizes = [_group_size(group, product, now, sampled) for group in product.groups]
+    bounds = [size.rows for size in sizes]
+    pairs = None if None in bounds else math.prod(b for b in bounds if b is not None)
+    exact = all(size.exact for size in sizes)
     if pairs is not None and pairs < warn_pairs:
         return None  # a small product, such as a cross join with a short date list
-    severity = (
-        Severity.BLOCK if exact and pairs is not None and pairs >= block_pairs else Severity.WARN
-    )
+    blocks = exact and pairs is not None and pairs >= block_pairs and product.limit is None
     line, column = product.position
     if line is None:
         line, column = next(
@@ -55,7 +69,7 @@ def _finding(product: Product, now: datetime, warn_pairs: int, block_pairs: int)
         )
     return Finding(
         rule=CROSS_JOIN,
-        severity=severity,
+        severity=Severity.BLOCK if blocks else Severity.WARN,
         message=_message(product, sizes, pairs, exact),
         fix=_fix(product),
         line=line,
@@ -64,31 +78,35 @@ def _finding(product: Product, now: datetime, warn_pairs: int, block_pairs: int)
 
 
 def _group_size(
-    group: tuple[TableFacts | DerivedSource, ...], product: Product, now: datetime
+    group: tuple[_Member, ...], product: Product, now: datetime, sampled: frozenset[str]
 ) -> _Size:
-    sizes = [_member_size(member, product, now) for member in group]
-    if len(sizes) == 1:
-        return sizes[0]
-    # Joins inside the group shape its rows, so its size is never exact.
-    bounds = [bound for bound, _exact in sizes]
-    return (None if None in bounds else max(b for b in bounds if b is not None)), False
-
-
-def _member_size(member: TableFacts | DerivedSource, product: Product, now: datetime) -> _Size:
-    if isinstance(member, DerivedSource):
-        return member.rows, False  # a LIMIT bounds the rows; it doesn't give them
-    # A comparison with another group, as in `a.ts < b.ts`, filters pairs, not this
-    # source's rows.
-    relating = {column for alias, column in product.relating if alias == member.alias}
-    rows = table_rows(replace(member, linked=member.linked - relating), now)
-    return (None, False) if rows is None else rows
+    if len(group) > 1:
+        # The joins inside the group decide its rows: a key that isn't unique on either
+        # side can give more rows than any member has.
+        return _Size(None, exact=False)
+    match group[0]:
+        case DerivedSource(rows=rows):
+            return _Size(rows, exact=False)  # a LIMIT bounds the rows; it doesn't give them
+        case TableFacts(alias=alias, table=table) as member:
+            if alias in product.flattened:
+                return _Size(None, exact=False)  # UNNEST repeats or drops its rows
+            # The conditions relating sources filter pairs, not this table's rows; what
+            # else limits them, product.limited says.
+            measured = table_rows(replace(member, linked=frozenset()), now)
+            if measured is None:
+                return _Size(None, exact=False)
+            count, known = measured
+            limited = alias in product.limited or table.qualified_name in sampled
+            return _Size(count, exact=known and not limited)
+        case other:
+            assert_never(other)
 
 
 def _message(product: Product, sizes: list[_Size], pairs: int | None, exact: bool) -> str:
     names = [_describe(group) for group in product.groups]
     simple = all(len(group) == 1 for group in product.groups)
     if product.inequality is not None:
-        condition = f"`{product.inequality}`, which isn't an equality"
+        condition = f"`{product.inequality}`, which isn't an equality between two sources"
         if simple:
             opening = f"{_join_words(names)} are joined only by {condition}"
         else:
@@ -110,10 +128,13 @@ def _message(product: Product, sizes: list[_Size], pairs: int | None, exact: boo
     elif pairs is not None:
         amount = f"up to about {_count(pairs)} pairs, fewer if filters or joins leave fewer rows"
     else:
-        unknown = [
-            name for name, (bound, _exact) in zip(names, sizes, strict=True) if bound is None
-        ]
+        unknown = [name for name, size in zip(names, sizes, strict=True) if size.rows is None]
         amount = f"how many isn't known, as {_join_words(unknown)} may hold any number of rows"
+    if product.limit is not None:
+        return (
+            f"{opening}: {amount}. The LIMIT {product.limit} stops BigQuery early, so compute "
+            f"stays small, but the rows it returns are arbitrary pairs."
+        )
     return (
         f"{opening}: {amount}. Bytes billed don't grow, but compute does, and counts or "
         "sums over the result are multiplied."
@@ -160,20 +181,26 @@ def _singular(name: str) -> str:
     name = name.lower()
     if name.endswith("ies"):
         return name[:-3] + "y"
-    return name[:-1] if name.endswith("s") else name
+    return name.removesuffix("s")
 
 
-def _describe(group: tuple[TableFacts | DerivedSource, ...]) -> str:
+def _describe(group: tuple[_Member, ...]) -> str:
     names = [_name(member) for member in group]
     return names[0] if len(names) == 1 else f"the join of {_join_words(names)}"
 
 
-def _name(member: TableFacts | DerivedSource) -> str:
-    if isinstance(member, DerivedSource):
-        # sqlglot names a subquery written without an alias `_0`, `_1`, ...
-        return "a subquery" if member.alias.startswith("_") else f"`{member.alias}`"
-    table = member.table.name
-    return f"`{member.alias}`" if member.alias == table else f"`{member.alias}` ({table})"
+def _name(member: _Member) -> str:
+    match member:
+        case DerivedSource(alias=alias) if alias.startswith("_"):
+            return "a subquery"  # sqlglot names a subquery written without an alias `_0`
+        case DerivedSource(alias=alias):
+            return f"`{alias}`"
+        case TableFacts(alias=alias, table=table) if alias == table.name:
+            return f"`{alias}`"
+        case TableFacts(alias=alias, table=table):
+            return f"`{alias}` ({table.name})"
+        case other:
+            assert_never(other)
 
 
 def _join_words(words: list[str], conjunction: str = "and") -> str:
@@ -182,14 +209,15 @@ def _join_words(words: list[str], conjunction: str = "and") -> str:
     return ", ".join(words[:-1]) + f" {conjunction} " + words[-1]
 
 
+_UNITS = ((10**6, "million"), (10**9, "billion"), (10**12, "trillion"), (10**15, "quadrillion"))
+
+
 def _count(n: int) -> str:
-    """A count in words: 3.1 billion."""
-    for size, word in (
-        (10**15, "quadrillion"),
-        (10**12, "trillion"),
-        (10**9, "billion"),
-        (10**6, "million"),
-    ):
-        if n >= size:
-            return f"{n / size:.1f}".removesuffix(".0") + f" {word}"
-    return f"{n:,}"
+    """A count in words, as 3.1 billion, moving up a unit when rounding reaches 1,000."""
+    if n < 10**6:
+        return f"{n:,}"
+    for size, word in _UNITS:
+        value = round(n / size, 1)
+        if value < 1000 or word == _UNITS[-1][1]:
+            return f"{value:.1f}".removesuffix(".0") + f" {word}"
+    raise AssertionError("unreachable")  # pragma: no cover

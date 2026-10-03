@@ -165,6 +165,7 @@ def _rule_findings(
         now,
         warn_pairs=policy.cross_join_warn_pairs,
         block_pairs=policy.cross_join_block_pairs,
+        sampled=_sampled(resolution),
     )
     findings = sorted([*pruning, *star, *cross], key=lambda f: (f.line or 0, f.column or 0, f.rule))
     return findings, facts

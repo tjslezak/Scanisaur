@@ -1127,7 +1127,67 @@ def test_product_records_the_inequality_and_where_it_starts() -> None:
     (product,) = facts.products
     assert product.inequality == "e.event_date BETWEEN p.valid_from AND p.valid_to"
     assert product.position == (3, 6)
-    assert ("p", "valid_from") in product.relating
+    # The comparison filters pairs, so it doesn't count as limiting either table.
+    assert product.limited == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("sql", "groups"),
+    [
+        # The ON inside a parenthesized join counts.
+        (
+            "SELECT 1 FROM users AS u JOIN (events AS e JOIN events_archive AS a "
+            "ON a.user_id = e.user_id) ON e.user_id = u.user_id",
+            [],
+        ),
+        # With two sources on one side, BigQuery must pair them first.
+        (
+            "SELECT 1 FROM events AS e, users AS u, events_archive AS a "
+            "WHERE CONCAT(e.user_id, u.country) = a.user_id",
+            [[["e"], ["u"], ["a"]]],
+        ),
+        # An IN list of columns is an OR of equalities.
+        ("SELECT 1 FROM events AS e, users AS u WHERE e.user_id IN (u.user_id, u.country)", []),
+        # An UNNEST of an UNNEST belongs to the first one's owner.
+        (
+            "SELECT 1 FROM events AS e, UNNEST(e.params) AS p, UNNEST(SPLIT(p.value)) AS v, "
+            "users AS u WHERE v = u.user_id",
+            [],
+        ),
+    ],
+)
+def test_more_products(sql: str, groups: list[list[list[str]]]) -> None:
+    assert aliases(facts_for(sql)) == groups
+
+
+def test_correlated_subquery_connects_through_the_outer_row() -> None:
+    facts = facts_for(
+        "SELECT u.user_id, (SELECT COUNT(*) FROM events AS e, events_archive AS a "
+        "WHERE e.user_id = u.user_id AND a.user_id = u.user_id) AS n FROM users AS u"
+    )
+    assert facts.products == ()
+
+
+def test_inequality_is_the_one_between_groups() -> None:
+    facts = facts_for(
+        "SELECT 1 FROM users AS u JOIN events AS e ON e.user_id = u.user_id "
+        "AND e.event_date < u.signup_date JOIN plans AS p ON p.valid_from > u.signup_date"
+    )
+    (product,) = facts.products
+    assert product.inequality == "p.valid_from > u.signup_date"
+
+
+def test_product_records_limits_unnest_and_early_limit() -> None:
+    sql = (
+        "SELECT 1 FROM events AS e, UNNEST(e.tags) AS t, users AS u "
+        "WHERE EXISTS (SELECT 1 FROM plans AS p WHERE p.plan_id = u.country) LIMIT 10"
+    )
+    (product,) = facts_for(sql).products
+    assert product.limited == frozenset({"u"})
+    assert product.flattened == frozenset({"e"})
+    assert product.limit == 10
+    ordered = facts_for("SELECT 1 FROM events AS e, users AS u ORDER BY e.event_ts LIMIT 10")
+    assert ordered.products[0].limit is None  # sorting needs every pair first
 
 
 def test_derived_source_bounds() -> None:

@@ -133,7 +133,7 @@ class TableFacts:
     paths: frozenset[tuple[str, ...]] | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DerivedSource:
     """A CTE or subquery joined as a source."""
 
@@ -143,7 +143,7 @@ class DerivedSource:
     position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Product:
     """A SELECT whose sources fall into groups that no equality in WHERE, ON or USING
     connects, so joining them pairs every row of one group with every row of another."""
@@ -152,14 +152,19 @@ class Product:
     #: one row, and an UNNEST, which belongs to the source whose array it reads, are left
     #: out.
     groups: tuple[tuple[TableFacts | DerivedSource, ...], ...]
-    #: A condition that does relate the groups but isn't an equality, as `a.ts < b.ts`, so
-    #: BigQuery compares every pair; None when nothing relates them.
+    #: A condition that does relate the groups but isn't an equality between two sources,
+    #: as `a.ts < b.ts`, so BigQuery compares every pair; None when nothing relates them.
     inequality: str | None
     #: Where the second group is joined.
     position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
-    #: The (alias, column) pairs that conditions relating sources read. They filter pairs
-    #: rather than a source's own rows, so they don't make a source's size unknown.
-    relating: frozenset[tuple[str, str]] = frozenset()
+    #: Tables whose rows something other than the conditions relating sources limits: a
+    #: correlated subquery, INTERSECT, or a reader's filter that can't move down.
+    limited: frozenset[str] = frozenset()
+    #: Tables whose arrays this SELECT flattens with UNNEST, which changes their rows.
+    flattened: frozenset[str] = frozenset()
+    #: The SELECT's LIMIT, when nothing in it needs every pair first (ORDER BY, GROUP BY,
+    #: DISTINCT, an aggregate, a window), so BigQuery stops once it has that many rows.
+    limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +207,9 @@ def extract(resolution: Resolution) -> QueryFacts:
     walk = _Walk(resolution.references, scopes)
     walk.run()
     limit, aggregated = _outer_shape(_effective_root(scopes[-1]).expression)
-    products = tuple(dict.fromkeys(walk.products))
+    # Visits of one SELECT give equal products; separate SELECTs, such as two UNION
+    # branches alike, stay apart by where they are written.
+    products = tuple({(p, p.position): p for p in walk.products}.values())
     return QueryFacts(walk.table_facts(), tuple(walk.joins), limit, aggregated, products)
 
 
@@ -405,11 +412,18 @@ class _Walk:
         pushdown: dict[str, list[_Pushed]] = {alias: [] for alias in derived}
         inherited, dropped = _inherited(select, item)
         linked = _Links(tables.keys() | derived.keys())
-        linked.add(_producers(select, item.linked | dropped))
+        # The same, less conditions that relate sources in WHERE or ON: they filter pairs
+        # of rows, not one source's rows, which SCN006 needs to know.
+        limits = _Links(tables.keys() | derived.keys())
+        producers = _producers(select, item.linked | dropped)
+        linked.add(producers)
+        limits.add(producers)
         conditions = [*_conditions(select), *((clause, c, None) for clause, c in inherited)]
         for clause, condition, filtered in conditions:
             local = _local_columns(condition)
-            linked.add(_correlated(condition, linked.sources, local))
+            correlated = list(_correlated(condition, linked.sources, local))
+            linked.add(correlated)
+            limits.add(correlated)
             owner = _filtered_source(condition, local, filtered, nullable)
             if owner in tables:
                 predicate = _classify(condition, clause)
@@ -422,6 +436,8 @@ class _Walk:
             # Not a filter on one source, as a join condition or a filter that runs too late
             # isn't, but it may still limit the values of the columns it reads.
             linked.add(local)
+            if clause not in ("where", "on") or len({c.table for c in local}) < 2:
+                limits.add(local)
 
         named = _named_by_clauses(select)
         reads = _read_columns(scope, select, item.needed, named)
@@ -463,7 +479,8 @@ class _Walk:
                 paths=table_paths,
             )
             self._visited.append(visited[alias])
-        product = _product(scope, select, visited, derived, self._output_names)
+        limited = frozenset(alias for alias in visited if limits.of(alias))
+        product = _product(scope, select, visited, derived, limited)
         if product is not None:
             self.products.append(product)
         if id(scope) not in self._joined:
@@ -551,73 +568,108 @@ def _product(
     select: exp.Select,
     tables: Mapping[str, TableFacts],
     derived: Mapping[str, Scope],
-    output_names: Callable[[exp.Expr], list[str]],
+    limited: frozenset[str],
 ) -> Product | None:
     """The groups of sources this SELECT joins with no equality connecting them, when
-    there is more than one. Only WHERE, ON and USING count: HAVING and QUALIFY run after
-    the join, and BigQuery reorders joins, so a later condition still connects."""
+    there is more than one. Only WHERE and ON count (resolve() turns USING into ON):
+    HAVING and QUALIFY run after the join. BigQuery reorders joins, so a condition written
+    later still connects."""
     members: dict[str, TableFacts | DerivedSource] = dict(tables)
     for alias, source in derived.items():
         bound = _row_bound(source.expression)
         if bound is None or bound > 1:  # one row pairs with each row once
             node = scope.selected_sources[alias][0]
-            members[alias] = DerivedSource(alias, bound, _written_at(node))
+            members[alias] = DerivedSource(alias=alias, rows=bound, position=_written_at(node))
     if len(members) < 2:
         return None
-    # An UNNEST belongs to the source whose array it reads; one of a literal or generated
-    # array, such as GENERATE_DATE_ARRAY, to none.
-    owners = {
-        alias: frozenset(c.table for c in node.find_all(exp.Column) if c.table in members)
-        for alias, (node, _source) in scope.selected_sources.items()
-        if isinstance(node, exp.Unnest)
-    }
+    owners = _unnest_owners(scope, members.keys())
 
     def sources_of(node: exp.Expr) -> frozenset[str]:
+        """The members a node reads. A column of an outer query, in a correlated subquery,
+        counts as a source of its own: conditions on it relate members through it."""
         found: set[str] = set()
         for column in _local_columns(node):
-            found |= {column.table} if column.table in members else owners.get(column.table, set())
+            if column.table in members:
+                found.add(column.table)
+            elif column.table in owners:
+                found |= owners[column.table]
+            elif column.table not in scope.selected_sources:
+                found.add(f"^{column.table}")
         return frozenset(found)
 
+    conditions = [(c, s) for c in _join_conditions(select) if len(s := sources_of(c)) >= 2]
     equal, related = _Groups(members), _Groups(members)
-    inequality: str | None = None
-    relating: set[tuple[str, str]] = set()
-    where = select.args.get("where")
-    conditions = list(_conjuncts(where.this)) if where is not None else []
-    for join in select.args.get("joins") or []:
-        conditions += _conjuncts(join.args.get("on"))
-    for condition in conditions:
-        sources = sources_of(condition)
-        if len(sources) < 2:
-            continue
-        relating |= {(c.table, c.name.lower()) for c in _local_columns(condition)}
+    for condition, sources in conditions:
         related.connect(sources)
         if _is_equality(condition, sources_of):
             equal.connect(sources)
-        elif inequality is None:
-            inequality = _shown(condition)
-    for join, earlier in _joins_in_order(select):
-        target = join.alias_or_name
-        for key in join.args.get("using") or []:
-            name = key.name.lower()
-            matches = {
-                alias
-                for alias in earlier
-                if alias in members
-                and name in _output_columns(alias, tables, derived, output_names)
-            }
-            if target in members and matches:
-                equal.connect({target, *matches})
-                related.connect({target, *matches})
-    order = [_from_alias(select), *(j.alias_or_name for j in select.args.get("joins") or [])]
+    order = list(scope.selected_sources)
     groups = equal.groups(order)
     if len(groups) < 2:
         return None
+    group_of = {member: index for index, group in enumerate(groups) for member in group}
+    # A condition between different groups, not one inside a keyed group.
+    between = (
+        condition
+        for condition, sources in conditions
+        if len({group_of[s] for s in sources if s in group_of}) > 1
+    )
+    inequality = next(between, None)
     return Product(
         groups=tuple(tuple(members[alias] for alias in group) for group in groups),
-        inequality=inequality if len(related.groups(order)) == 1 else None,
+        inequality=(
+            _shown(inequality)
+            if inequality is not None and len(related.groups(order)) == 1
+            else None
+        ),
         position=members[groups[1][0]].position,
-        relating=frozenset(relating),
+        limited=limited,
+        flattened=frozenset(owner for found in owners.values() for owner in found),
+        limit=_early_limit(select),
     )
+
+
+def _join_conditions(select: exp.Select) -> list[exp.Expr]:
+    """Each conjunct of WHERE and of every ON, nested joins such as
+    ``JOIN (b JOIN c ON ...) ON ...`` included."""
+    where = select.args.get("where")
+    conditions = list(_conjuncts(where.this)) if where is not None else []
+    for join in find_all_in_scope(select, exp.Join):
+        conditions += _conjuncts(join.args.get("on"))
+    return conditions
+
+
+def _unnest_owners(scope: Scope, members: Iterable[str]) -> dict[str, frozenset[str]]:
+    """Each UNNEST's alias, with the members whose arrays it reads: through another UNNEST
+    too, as in ``UNNEST(i.tags)`` over ``UNNEST(e.items) AS i``. One of a literal or a
+    generated array, such as GENERATE_DATE_ARRAY, belongs to none."""
+    names = set(members)
+    owners: dict[str, frozenset[str]] = {}
+    for alias, (node, _source) in scope.selected_sources.items():  # in FROM order
+        if isinstance(node, exp.Unnest):
+            found: set[str] = set()
+            for column in node.find_all(exp.Column):
+                if column.table in names:
+                    found.add(column.table)
+                else:
+                    found |= owners.get(column.table, frozenset())
+            owners[alias] = frozenset(found)
+    return owners
+
+
+def _early_limit(select: exp.Select) -> int | None:
+    """The SELECT's LIMIT, when nothing in it needs every row first, so BigQuery stops
+    once it has that many: measured, `CROSS JOIN ... LIMIT 10` took 0.14 slot-seconds
+    where the whole product took 160 (#23)."""
+    limit_node = select.args.get("limit")
+    value = limit_node.expression if limit_node is not None else None
+    if not (isinstance(value, exp.Literal) and value.is_int):
+        return None
+    if any(select.args.get(k) for k in ("order", "group", "distinct", "having", "qualify")):
+        return None
+    if _select_aggregated(select) or any(p.find(exp.Window) for p in select.expressions):
+        return None
+    return int(value.this)
 
 
 def _shown(condition: exp.Expr) -> str:
@@ -643,7 +695,8 @@ class _Groups:
     """Sources joined into groups by the conditions that connect them (union-find)."""
 
     def __init__(self, members: Iterable[str]) -> None:
-        self._parent = {member: member for member in members}
+        self._members = list(members)
+        self._parent = {member: member for member in self._members}
 
     def _root(self, member: str) -> str:
         while self._parent[member] != member:
@@ -651,14 +704,16 @@ class _Groups:
         return member
 
     def connect(self, members: Iterable[str]) -> None:
-        roots = [self._root(m) for m in members]
+        """Join these into one group. A name not given at the start, such as an outer
+        query's source, joins groups without being one."""
+        roots = [self._root(self._parent.setdefault(m, m)) for m in members]
         for root in roots[1:]:
             self._parent[root] = roots[0]
 
     def groups(self, order: list[str]) -> list[list[str]]:
         """The groups, each in FROM order, ordered by their first member."""
-        ranked = [m for m in order if m in self._parent]
-        ranked += [m for m in self._parent if m not in ranked]
+        ranked = [m for m in order if m in self._members]
+        ranked += [m for m in self._members if m not in ranked]
         groups: dict[str, list[str]] = {}
         for member in ranked:
             groups.setdefault(self._root(member), []).append(member)
@@ -666,9 +721,9 @@ class _Groups:
 
 
 def _is_equality(condition: exp.Expr, sources_of: Callable[[exp.Expr], frozenset[str]]) -> bool:
-    """True for an equality between different sources, which BigQuery joins by matching
-    values. An OR of them counts too: measured, it took 0.7 slot-seconds where `<` took
-    155 (#23)."""
+    """True for an equality between two sources, which BigQuery joins by matching values.
+    An OR of them, or an IN list of them, counts too: measured, an OR took 0.7
+    slot-seconds where `<` took 155 (#23)."""
     return all(
         any(_equates(node, sources_of) for node in _conjuncts(branch))
         for branch in _operands(condition, exp.Or)
@@ -676,10 +731,17 @@ def _is_equality(condition: exp.Expr, sources_of: Callable[[exp.Expr], frozenset
 
 
 def _equates(node: exp.Expr, sources_of: Callable[[exp.Expr], frozenset[str]]) -> bool:
-    if not isinstance(node, exp.EQ):
-        return False
-    left, right = sources_of(node.left), sources_of(node.right)
-    return bool(left) and bool(right) and not left & right
+    """True when each side reads exactly one source, a different one: with two sources on
+    one side, as `a.x + b.y = c.z`, BigQuery must pair a with b first."""
+    match node:
+        case exp.EQ(left=left, right=right):
+            sides = [sources_of(left), sources_of(right)]
+        case exp.In(this=left, expressions=[_, *_] as items) if node.args.get("query") is None:
+            sides = [sources_of(left), *map(sources_of, items)]
+        case _:
+            return False
+    first, *others = sides
+    return len(first) == 1 and all(len(side) == 1 and side != first for side in others)
 
 
 def _row_bound(query: exp.Expr) -> int | None:
@@ -701,17 +763,6 @@ def _row_bound(query: exp.Expr) -> int | None:
             shape = left + right
     bounds = [b for b in (limit, shape) if b is not None]
     return min(bounds) if bounds else None
-
-
-def _output_columns(
-    alias: str,
-    tables: Mapping[str, TableFacts],
-    derived: Mapping[str, Scope],
-    output_names: Callable[[exp.Expr], list[str]],
-) -> set[str]:
-    if alias in tables:
-        return {column.name.lower() for column in tables[alias].table.columns}
-    return set(output_names(derived[alias].expression))
 
 
 def _sort_key(position: tuple[int | None, int | None]) -> tuple[float, float]:

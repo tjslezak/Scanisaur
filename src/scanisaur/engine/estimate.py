@@ -32,8 +32,8 @@ from typing import TypeVar
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from scanisaur.catalog.model import TABLE_SUFFIX, Granularity, Table
-from scanisaur.engine.facts import QueryFacts, TableFacts
+from scanisaur.catalog.model import PARTITIONDATE, PARTITIONTIME, TABLE_SUFFIX, Granularity, Table
+from scanisaur.engine.facts import Predicate, QueryFacts, TableFacts
 from scanisaur.engine.parse import DIALECT
 from scanisaur.engine.pruning import (
     defeats_pruning,
@@ -255,8 +255,10 @@ def table_rows(reference: TableFacts, now: datetime) -> tuple[int, bool] | None:
     or a size."""
     table = reference.table
     rows, size = table.row_count, table.size_bytes
-    if rows is None or not size or not _estimable(table):
+    if rows is None or size is None or not _estimable(table):
         return None
+    if size == 0:
+        return rows, rows == 0  # an empty table holds no rows
     units, domain = _units(table, size, _naive_utc(now))
     high, _low, confidence = _partitions(reference, units, domain)
     kept = sum(units[unit] for unit in high)
@@ -282,8 +284,24 @@ def _only_partition_filters(reference: TableFacts) -> bool:
         and predicate.op != "other"
         and predicate.constant
         and not (table.partitioning is not None and defeats_pruning(tree, table))
+        and _whole_partitions(predicate, table)
         for predicate, tree in parsed
     )
+
+
+def _whole_partitions(predicate: Predicate, table: Table) -> bool:
+    """True when the filter keeps or drops whole partitions, so the rows it keeps are
+    theirs: a shard suffix, a pseudo-column holding each partition's start, or a DATE
+    partitioned by day, as `day = '…'` or `DATE(ts) = '…'`. A finer filter, such as a
+    five-second window in a daily partition, keeps fewer rows than its partitions hold."""
+    column = predicate.column.lower()
+    if table.is_wildcard or column in (PARTITIONTIME.lower(), PARTITIONDATE.lower()):
+        return True
+    partitioning = table.partitioning
+    if partitioning is None or partitioning.granularity != "DAY":
+        return False
+    types = {c.name.lower(): c.type.upper() for c in table.columns}
+    return types.get(column) == "DATE" or (predicate.wrapper or "").upper() == "DATE"
 
 
 def _units(table: Table, size: int, now: datetime) -> tuple[dict[str, int], _Domain | None]:

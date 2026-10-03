@@ -13,7 +13,7 @@
     {
       "rule": "SCN006",
       "severity": "block",
-      "message": "`u` (users) and `t` (trends) are joined only by `t.refresh_date > u.signup_date`, which isn't an equality, so BigQuery compares every pair: about 219.9 trillion pairs. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "message": "`u` (users) and `t` (trends) are joined only by `t.refresh_date > u.signup_date`, which isn't an equality between two sources, so BigQuery compares every pair: about 219.9 trillion pairs. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
       "fix": "Add an equality between the two sides alongside the comparison, so BigQuery matches rows by it before comparing.",
       "line": 3,
       "column": 10
