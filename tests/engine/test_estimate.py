@@ -884,3 +884,11 @@ class TestSecondReview:
         )
         result = check("SELECT v FROM jobs_information_schema_copy", Catalog((table,), "p", "d"))
         assert result.estimate is not None
+
+
+class TestFloor:
+    def test_unknown_unit_gives_none_rather_than_day(self) -> None:
+        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), "MINUTE") is None
+
+    def test_day(self) -> None:
+        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), "DAY") == datetime(2026, 10, 3)

@@ -80,6 +80,9 @@ class DryRuns:
 def load_queries(path: Path) -> list[Query]:
     entries = yaml.safe_load(path.read_text(encoding="utf-8"))
     # The SQL is kept as written: collapsing lines would let a `--` comment swallow the rest.
+    for e in entries:
+        if not isinstance(e.get("id"), str) or not isinstance(e.get("sql"), str):
+            raise ValueError(f"{path}: query {e.get('id', '?')} needs a string id and sql")
     queries = [Query(e["id"], e["sql"].strip(), tuple(e.get("expect", ()))) for e in entries]
     ids = [q.id for q in queries]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})

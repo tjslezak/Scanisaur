@@ -45,6 +45,7 @@ from scanisaur.catalog.model import (
     Table,
     TableKind,
 )
+from scanisaur.errors import ScanisaurError
 
 #: What BigQuery's partition IDs look like, by granularity.
 _PARTITION_IDS: dict[Granularity, re.Pattern[str]] = {
@@ -57,7 +58,7 @@ _PARTITION_IDS: dict[Granularity, re.Pattern[str]] = {
 _SPECIAL_PARTITIONS = ("__NULL__", "__UNPARTITIONED__")
 
 
-class FixtureError(ValueError):
+class FixtureError(ScanisaurError, ValueError):
     """A catalog fixture that can't be read or doesn't match the expected shape."""
 
 
