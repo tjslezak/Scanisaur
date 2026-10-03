@@ -19,6 +19,7 @@ import json
 import os
 import shlex
 import socket
+import stat
 import sys
 import tempfile
 from collections.abc import Callable
@@ -35,6 +36,8 @@ DEFAULT_TOOLS = ("*execute_sql*",)
 SHELL_TOOLS = ("Bash",)
 #: Argument names that hold the SQL of a matching tool.
 SQL_ARGUMENTS = ("sql", "query")
+#: The characters shlex splits out as shell operators.
+_SHELL_OPERATOR_CHARS = frozenset("();<>|&")
 CONNECT_TIMEOUT = 0.05
 READ_TIMEOUT = 2.0
 #: The longest response line accepted from the server.
@@ -116,24 +119,60 @@ def _unfilled(value: str) -> bool:
 def bq_query_sql(command: str) -> str | None:
     """The SQL of a ``bq query 'SELECT ...'`` command: its last argument that isn't a flag.
 
-    Commands this can't read, such as SQL piped in from a file, aren't checked.
+    Only the words of the ``bq`` command itself count, up to a pipe, ``&&``, ``;`` or
+    redirect. Commands this can't read, such as SQL piped in from a file, aren't checked.
     """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
     try:
-        words = shlex.split(command)
-    except ValueError:
+        words = list(lexer)
+    except ValueError:  # an unclosed quote
         return None
-    for i, word in enumerate(words[:-1]):
-        if Path(word).name == "bq" and "query" in words[i + 1 :]:
-            rest = words[words.index("query", i + 1) + 1 :]
-            positional = [w for w in rest if not w.startswith("-")]
+    for segment in _commands(words):
+        names = [Path(word).name for word in segment]
+        if "bq" in names and "query" in segment[names.index("bq") + 1 :]:
+            rest = segment[segment.index("query", names.index("bq") + 1) + 1 :]
+            positional = [word for word in rest if not word.startswith("-")]
             return positional[-1] if positional else None
     return None
 
 
+def _commands(words: list[str]) -> list[list[str]]:
+    """Split shell words into simple commands at operators such as ``|``, ``&&`` and ``>``.
+
+    A redirect's target, the word after ``>`` or ``<``, is dropped with it.
+    """
+    commands: list[list[str]] = [[]]
+    skip_next = False
+    for word in words:
+        if skip_next:
+            skip_next = False
+        elif word and set(word) <= _SHELL_OPERATOR_CHARS:
+            skip_next = word[0] in "<>"
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    return commands
+
+
+def private_dir(path: Path) -> bool:
+    """True when ``path`` is a directory of the current user that no one else can use.
+
+    The socket's directory can be in the shared temp directory. If another user made it
+    first, they could answer checks with their own verdicts, so it isn't trusted.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    owned = hasattr(os, "getuid") and info.st_uid == os.getuid()
+    return owned and stat.S_ISDIR(info.st_mode) and info.st_mode & 0o077 == 0
+
+
 def request_check(path: Path, sql: str) -> JsonObject | None:
     """Ask the server at ``path``; None when no server answers."""
-    if not hasattr(socket, "AF_UNIX"):
-        return None  # Windows: no local sockets in v0.1
+    if not hasattr(socket, "AF_UNIX") or not private_dir(path.parent):
+        return None  # Windows has no local sockets in v0.1
     request = json.dumps({"v": PROTOCOL_VERSION, "sql": sql}).encode() + b"\n"
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:

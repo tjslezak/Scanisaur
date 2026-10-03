@@ -98,13 +98,26 @@ class TestBqQuerySql:
             ("bq query 'SELECT 1'", "SELECT 1"),
             ('/usr/bin/bq --project_id=p query --nouse_legacy_sql "SELECT 1"', "SELECT 1"),
             ("cd x && bq query --format json 'SELECT 1'", "SELECT 1"),
+            ("bq query 'SELECT 1' | head -5", "SELECT 1"),
+            ("bq query 'SELECT 1'|head", "SELECT 1"),
+            ("bq query 'SELECT 1' > out.txt; echo done", "SELECT 1"),
+            ("bq query 'SELECT a FROM t WHERE x > 1'", "SELECT a FROM t WHERE x > 1"),
         ],
     )
     def test_reads_the_sql(self, command: str, sql: str) -> None:
         assert bq_query_sql(command) == sql
 
     @pytest.mark.parametrize(
-        "command", ["bq ls", "bq query", "bq query --flag", "echo 'unclosed", "query bq"]
+        "command",
+        [
+            "bq ls",
+            "bq query",
+            "bq query --flag",
+            "echo 'unclosed",
+            "query bq",
+            "bq ls && echo query x",
+            "bq query < q.sql",
+        ],
     )
     def test_nothing_to_read(self, command: str) -> None:
         assert bq_query_sql(command) is None
@@ -199,6 +212,24 @@ class TestListener:
                 return dict(answer)
 
         assert asyncio.run(run()) == {"error": error}
+
+    def test_shared_directory_is_not_trusted(self, sock: Path) -> None:
+        sock.parent.chmod(0o755)  # as if another user had made it, or left it open
+
+        async def run() -> None:
+            async with hook_listener(sock, SOURCE, Policy()) as server:
+                assert server is None
+                assert not sock.exists()
+
+        asyncio.run(run())
+
+    def test_client_skips_a_shared_directory(self, sock: Path) -> None:
+        async def run() -> dict[str, Any] | None:
+            async with hook_listener(sock, SOURCE, Policy()):
+                sock.parent.chmod(0o755)
+                return await asyncio.to_thread(request_check, sock, GOOD_SQL)
+
+        assert asyncio.run(run()) is None
 
     def test_no_server(self, sock: Path) -> None:
         assert request_check(sock, GOOD_SQL) is None

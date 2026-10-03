@@ -17,7 +17,7 @@ from pathlib import Path
 
 from scanisaur.catalog.source import CatalogSource
 from scanisaur.engine.check import Policy, check
-from scanisaur.hook import PROTOCOL_VERSION
+from scanisaur.hook import PROTOCOL_VERSION, private_dir
 
 #: The longest request line accepted, which bounds the SQL a hook can send.
 MAX_REQUEST = 8 << 20
@@ -34,10 +34,17 @@ async def hook_listener(
     Several MCP clients can each start ``serve`` for the same project. The first one to
     bind answers the hooks; the others serve their MCP session only.
     """
-    if not hasattr(socket, "AF_UNIX") or _in_use(path):
+    if not hasattr(socket, "AF_UNIX"):
         yield None
         return
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not private_dir(path.parent):
+        log.warning("not answering hooks: %s isn't private to this user", path.parent)
+        yield None
+        return
+    if _in_use(path):
+        yield None
+        return
     path.unlink(missing_ok=True)  # left behind by a server that didn't shut down cleanly
 
     async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
