@@ -10,12 +10,13 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 
 import duckdb
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from scanisaur.catalog.connectors.base import ConnectorError, Probe, included
+from scanisaur.catalog.connectors.base import ConnectorError, Probe, QueryRun, included
 from scanisaur.catalog.model import Catalog, Column, Table, TableKind
 from scanisaur.config import DuckDBWarehouse
 
@@ -68,6 +69,9 @@ class DuckDBConnector:
         except ConnectorError as error:
             return [Probe("metadata", "fail", str(error))]
         return [Probe("metadata", "ok", f"{len(catalog.tables)} tables in {self._warehouse.path}")]
+
+    def fetch_query_history(self, since: datetime) -> Iterator[QueryRun]:
+        raise ConnectorError("DuckDB keeps no query history to audit")
 
     def _tables(self, db: duckdb.DuckDBPyConnection) -> tuple[Table, ...]:
         columns: defaultdict[_Name, list[Column]] = defaultdict(list)

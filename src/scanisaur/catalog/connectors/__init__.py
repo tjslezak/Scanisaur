@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import assert_never
 
-from scanisaur.catalog.connectors.base import Connector, ConnectorError, Probe
+from scanisaur.catalog.connectors.base import Connector, ConnectorError, Probe, QueryRun
 from scanisaur.config import BigQueryWarehouse, DuckDBWarehouse
 
-__all__ = ["Connector", "ConnectorError", "Probe", "connect"]
+__all__ = ["Connector", "ConnectorError", "Probe", "QueryRun", "connect"]
 
 
 def connect(warehouse: BigQueryWarehouse | DuckDBWarehouse) -> Connector:

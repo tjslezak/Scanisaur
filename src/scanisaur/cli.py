@@ -13,7 +13,8 @@ import typer
 import yaml
 
 from scanisaur import __version__
-from scanisaur.audit.log import append, decision, log_directory
+from scanisaur.audit.log import append, decision, log_directory, read
+from scanisaur.audit.report import CHECK_WINDOW, Report, Total, audit
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
@@ -158,6 +159,73 @@ def _log_check(settings: Config, result: CheckResult, sql: str) -> None:
         append(log_directory(settings.log), entry)
     except OSError as error:
         typer.echo(f"warning: decision log not written: {error}", err=True)
+
+
+@app.command("audit")
+def audit_command(
+    days: Annotated[
+        int, typer.Option("--days", min=1, help="How many days of query history to read.")
+    ] = 30,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+    top: Annotated[int, typer.Option("--top", min=1, help="Lines per list.")] = 10,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+) -> None:
+    """Replay checks over the warehouse's query history and report what they flag.
+
+    Needs bigquery.jobs.listAll (roles/bigquery.resourceViewer), which also exposes the
+    full text of every query in the project. Nothing is written to the decision log.
+    """
+    since = datetime.now(UTC) - timedelta(days=days)
+    try:
+        settings = _config(config)
+        source = CachedSource(settings)
+        runs = list(source.connector.fetch_query_history(since))
+        catalog = source.current().catalog
+    except ScanisaurError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    decisions = read(log_directory(settings.log), since - CHECK_WINDOW)
+    report = audit(runs, catalog, decisions, since=since, policy=settings.policy, top=top)
+    typer.echo(report.model_dump_json(indent=2) if as_json else _format_report(report))
+
+
+def _format_report(report: Report) -> str:
+    lines = [
+        f"{report.runs} queries since {report.since:%Y-%m-%d}, "
+        f"{format_bytes(report.bytes_billed)} billed",
+        f"flagged: {report.flagged_runs} queries, {format_bytes(report.flagged_bytes)} billed",
+        f"unchecked: {report.unchecked_runs} queries; run after a block: {report.ran_after_block}",
+    ]
+    if report.flagged:
+        lines.append("\nflagged queries, most billed first:")
+        for shape in report.flagged:
+            lines.append(
+                f"  {format_bytes(shape.bytes_billed):>9}  {shape.runs:>5} runs  "
+                f"{shape.verdict.value:<5}  {', '.join(shape.rules)}"
+            )
+            lines.append(f"  {'':>9}  {_clipped(shape.sql)}")
+    lines += _totals_section("top tables", report.tables)
+    lines += _totals_section("top rules", report.rules)
+    return "\n".join(lines)
+
+
+def _totals_section(title: str, totals: tuple[Total, ...]) -> list[str]:
+    if not totals:
+        return []
+    rows = [f"  {format_bytes(t.bytes_billed):>9}  {t.runs:>5} runs  {t.name}" for t in totals]
+    return [f"\n{title}, by bytes billed:", *rows]
+
+
+def _clipped(sql: str, width: int = 100) -> str:
+    return sql if len(sql) <= width else sql[: width - 3] + "..."
 
 
 @app.command("refresh")

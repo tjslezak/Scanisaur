@@ -1,14 +1,19 @@
 import json
 import re
 import runpy
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from scanisaur import __version__, cli
+from scanisaur.catalog.connectors import QueryRun
+from scanisaur.catalog.fixtures import load_catalog
+from scanisaur.catalog.source import Snapshot
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
-from scanisaur.config import BigQueryWarehouse, DuckDBWarehouse, load_config
+from scanisaur.config import BigQueryWarehouse, Config, DuckDBWarehouse, load_config
 from scanisaur.engine.check import DEFAULT_POLICY
 from scanisaur.engine.result import Estimate
 
@@ -382,3 +387,54 @@ class TestDecisionLog:
         result = run_check("--config", str(config), sql="SELECT 1")
         assert result.exit_code == EXIT_OK
         assert "warning: decision log not written" in result.stderr
+
+
+class _History:
+    def __init__(self, runs: list[QueryRun]) -> None:
+        self.runs = runs
+
+    def fetch_query_history(self, since: datetime) -> Iterator[QueryRun]:
+        return iter(self.runs)
+
+
+class _Source:
+    def __init__(self, config: Config, runs: list[QueryRun]) -> None:
+        self.connector = _History(runs)
+
+    def current(self) -> Snapshot:
+        return Snapshot(load_catalog(Path(CATALOG)), "s1")
+
+
+class TestAudit:
+    @pytest.fixture
+    def config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        started = datetime.now(UTC) - timedelta(hours=1)
+        runs = [
+            QueryRun("j1", started, "a@x", "SELECT * FROM events WHERE event_date = 'x'", 2**30),
+            QueryRun(
+                "j2", started, None, "SELECT user_id FROM events WHERE event_date = '2026-09-01'", 0
+            ),
+        ]
+        monkeypatch.setattr(cli, "CachedSource", lambda config: _Source(config, runs))
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text(f"log: {{path: {tmp_path / 'log'}}}\n", encoding="utf-8")
+        return config
+
+    def test_report(self, config: Path) -> None:
+        result = runner.invoke(app, ["audit", "--config", str(config), "--days", "7"])
+        assert result.exit_code == EXIT_OK, result.output
+        lines = result.stdout.splitlines()
+        assert lines[0].startswith("2 queries since ")
+        assert lines[1] == "flagged: 1 queries, 1.1 GB billed"
+        assert "SELECT * FROM events WHERE event_date = ?" in result.stdout
+        assert "top rules, by bytes billed:" in result.stdout
+
+    def test_json(self, config: Path) -> None:
+        result = runner.invoke(app, ["audit", "--config", str(config), "--json"])
+        assert json.loads(result.stdout)["flagged_runs"] == 1
+
+    def test_without_warehouse(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["audit"])
+        assert result.exit_code == EXIT_ERROR
+        assert "names no warehouse" in result.stderr

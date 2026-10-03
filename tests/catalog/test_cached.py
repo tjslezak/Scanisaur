@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import pytest
 from scanisaur.catalog import Catalog, Column, Table
 from scanisaur.catalog.cache import MetadataCache
 from scanisaur.catalog.cached import CachedSource
-from scanisaur.catalog.connectors import ConnectorError, Probe
+from scanisaur.catalog.connectors import ConnectorError, Probe, QueryRun
 from scanisaur.config import CacheSettings, Config, ConfigError, DuckDBWarehouse
 
 
@@ -34,6 +35,9 @@ class FakeConnector:
 
     def check_access(self) -> list[Probe]:
         return []
+
+    def fetch_query_history(self, since: datetime) -> Iterator[QueryRun]:
+        return iter(())
 
 
 class Clock:
