@@ -18,7 +18,28 @@ policy:
     SCN005: off
 ```
 
-Every key is optional. `profile`, `warehouse`, `planner` and `cache` are accepted, so a whole project file loads, but nothing reads them yet. Any other key, an unknown rule ID, or a `warn_bytes` set larger than `block_bytes` is an error, and `scanisaur check` exits with 2.
+Every key is optional. `profile` and `planner` are accepted, so a whole project file loads, but nothing reads them yet. `warehouse`, `cache` and `keys` are described under [Warehouse, cache and keys](#warehouse-cache-and-keys). Any other key, an unknown rule ID, or a `warn_bytes` set larger than `block_bytes` is an error, and `scanisaur check` exits with 2.
+
+## Warehouse, cache and keys
+
+```yaml
+warehouse:
+  type: bigquery          # or duckdb
+  project: acme-analytics
+  location: US            # default US
+  billing_project: acme-billing           # optional; the warehouse project by default
+  include_datasets: [analytics, marts]    # optional; every dataset when left out
+  exclude_datasets: [scratch]             # optional
+cache:
+  ttl: 6h                 # a snapshot older than this is refreshed; 30m, 1d, 90s or seconds
+  path: ~/scanisaur.sqlite                # optional; the user cache directory by default
+keys:                     # column sets unique in a table, for SCN007
+  acme-analytics.marts.orders: [[order_id]]
+```
+
+A DuckDB warehouse takes `path`, the database file, instead of `project`, `location` and `billing_project`. A relative path is read from the directory that holds `scanisaur.yaml`. BigQuery credentials come from Application Default Credentials and never from this file.
+
+BigQuery doesn't enforce primary keys and most tables declare none, so `keys` lists the column sets you know are unique. Each table name must be `project.dataset.table`.
 
 ## Sizes
 

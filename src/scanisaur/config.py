@@ -12,9 +12,18 @@ Example::
       block_bytes: 1TiB
       rules:
         SCN005: off           # or info, warn, block
+    warehouse:
+      type: bigquery          # or duckdb, with path: demo.duckdb
+      project: acme-analytics
+      location: US
+      include_datasets: [analytics, marts]   # optional; every dataset when left out
+    cache:
+      ttl: 6h
+    keys:                     # unique column sets BigQuery tables don't declare
+      acme-analytics.marts.orders: [[order_id]]
 
-``profile``, ``warehouse``, ``planner`` and ``cache`` are accepted so a whole project file
-loads, but nothing reads them yet.
+``profile`` and ``planner`` are accepted so a whole project file loads, but nothing reads
+them yet.
 """
 
 from __future__ import annotations
@@ -22,8 +31,11 @@ from __future__ import annotations
 import math
 import os
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -49,6 +61,8 @@ _UNITS = {
     "TIB": 2**40,
     "PIB": 2**50,
 }
+_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*([smhd]?)", re.IGNORECASE)
 #: A number, with an optional exponent (YAML reads ``1e11`` as a string), and a unit.
 _SIZE = re.compile(r"(\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*([A-Za-z]*)")
 
@@ -79,6 +93,18 @@ def parse_size(value: object) -> int | None:
         if factor is not None and math.isfinite(size):
             return round(size)
     raise ValueError(f"expected a size such as 100GiB, 1TB or a number of bytes, or off: {value!r}")
+
+
+def parse_duration(value: object) -> timedelta:
+    """A duration from ``6h``, ``30m``, ``1d``, ``90s`` or a number of seconds."""
+    if isinstance(value, timedelta):
+        return value
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return timedelta(seconds=value)
+    if isinstance(value, str) and (match := _DURATION.fullmatch(value.strip())):
+        number, unit = match.groups()
+        return timedelta(seconds=float(number) * _SECONDS[unit.lower()])
+    raise ValueError(f"expected a duration such as 6h, 30m or a number of seconds: {value!r}")
 
 
 class _Spec(BaseModel):
@@ -117,27 +143,117 @@ class _PolicySpec(_Spec):
         return {rule: "off" if setting is False else setting for rule, setting in value.items()}
 
 
+class BigQueryWarehouse(_Spec):
+    """A BigQuery project. Credentials come from Application Default Credentials only."""
+
+    type: Literal["bigquery"]
+    project: str = Field(min_length=1)
+    location: str = "US"
+    #: The project billed for metadata queries; the warehouse project when left out.
+    billing_project: str | None = None
+    #: Datasets to read; every dataset in the project when empty.
+    include_datasets: tuple[str, ...] = ()
+    exclude_datasets: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        """This warehouse's identity, which keys its metadata cache."""
+        return f"bigquery:{self.project}:{self.location}"
+
+
+class DuckDBWarehouse(_Spec):
+    """A DuckDB database file, opened read-only. Relative paths are from the config file."""
+
+    type: Literal["duckdb"]
+    path: Path
+    include_datasets: tuple[str, ...] = ()
+    exclude_datasets: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        """This warehouse's identity, which keys its metadata cache."""
+        return f"duckdb:{self.path.resolve()}"
+
+
+Warehouse = Annotated[BigQueryWarehouse | DuckDBWarehouse, Field(discriminator="type")]
+
+
+class CacheSettings(_Spec):
+    #: A snapshot older than this is refreshed before it's used.
+    ttl: timedelta = timedelta(hours=6)
+    #: The SQLite file; one in the user cache directory when left out.
+    path: Path | None = None
+
+    @field_validator("ttl", mode="before")
+    @classmethod
+    def _duration(cls, value: object) -> timedelta:
+        return parse_duration(value)
+
+
+#: Unique column sets per table, such as ``{"p.d.orders": (("order_id",),)}``.
+Keys = Mapping[str, tuple[tuple[str, ...], ...]]
+
+
 class _ConfigSpec(_Spec):
     profile: str | None = None
-    warehouse: dict[str, Any] | None = None
+    warehouse: Warehouse | None = None
     pricing: _PricingSpec = _PricingSpec()
     policy: _PolicySpec = _PolicySpec()
     planner: dict[str, Any] | None = None
-    cache: dict[str, Any] | None = None
+    cache: CacheSettings = field(default_factory=CacheSettings)
+    keys: dict[str, tuple[tuple[str, ...], ...]] = Field(default_factory=dict)
 
-    @field_validator("pricing", "policy", mode="before")
+    @field_validator("keys")
+    @classmethod
+    def _keys(
+        cls, keys: dict[str, tuple[tuple[str, ...], ...]]
+    ) -> dict[str, tuple[tuple[str, ...], ...]]:
+        for table, column_sets in keys.items():
+            parts = table.split(".")
+            if len(parts) != 3 or not all(parts):
+                raise ValueError(f"table name {table!r} must be project.dataset.table")
+            if any(not columns for columns in column_sets):
+                raise ValueError(f"{table}: a key needs at least one column")
+        return keys
+
+    @field_validator("pricing", "policy", "cache", mode="before")
     @classmethod
     def _empty_section(cls, value: object) -> object:
         # A section whose keys are all commented out reads as null.
         return {} if value is None else value
 
 
+@dataclass(frozen=True, slots=True)
+class Config:
+    """Everything ``scanisaur.yaml`` sets."""
+
+    policy: Policy = DEFAULT_POLICY
+    #: None when the file names no warehouse: checks then need a catalog fixture.
+    warehouse: BigQueryWarehouse | DuckDBWarehouse | None = None
+    cache: CacheSettings = field(default_factory=CacheSettings)
+    keys: Keys = field(default_factory=dict)
+
+
 def load_policy(path: str | os.PathLike[str]) -> Policy:
     """Read the policy from a ``scanisaur.yaml``, raising ConfigError with the reason."""
+    return load_config(path).policy
+
+
+def load_config(path: str | os.PathLike[str]) -> Config:
+    """Read a ``scanisaur.yaml``, raising ConfigError with the reason."""
     path = Path(path)
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ConfigError(f"{path}: {error}") from error
+    return load_config_text(text, path)
+
+
+def load_config_text(text: str, path: Path) -> Config:
+    """Read ``scanisaur.yaml`` text; ``path`` names it in errors and anchors DuckDB paths."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as error:
         raise ConfigError(f"{path}: {error}") from error
     try:
         spec = _ConfigSpec.model_validate({} if data is None else data)
@@ -159,6 +275,18 @@ def load_policy(path: str | os.PathLike[str]) -> Policy:
         price = None
     else:
         price = pricing.usd_per_tib or DEFAULT_POLICY.price_per_tib
+    warehouse = spec.warehouse
+    if isinstance(warehouse, DuckDBWarehouse) and not warehouse.path.is_absolute():
+        warehouse = warehouse.model_copy(update={"path": path.parent / warehouse.path})
+    return Config(
+        policy=_policy(spec.policy, price),
+        warehouse=warehouse,
+        cache=spec.cache,
+        keys=spec.keys,
+    )
+
+
+def _policy(policy: _PolicySpec, price: float | None) -> Policy:
     return Policy(
         read_only=policy.read_only,
         fail_mode=policy.fail_mode,

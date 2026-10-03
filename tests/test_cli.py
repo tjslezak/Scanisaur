@@ -8,6 +8,8 @@ from typer.testing import CliRunner, Result
 
 from scanisaur import __version__, cli
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
+from scanisaur.config import BigQueryWarehouse, DuckDBWarehouse, load_config
+from scanisaur.engine.check import DEFAULT_POLICY
 from scanisaur.engine.result import Estimate
 
 runner = CliRunner()
@@ -191,3 +193,167 @@ class TestPolicyFile:
     def test_missing_config_is_a_usage_error(self, tmp_path: Path) -> None:
         result = run_check("--config", str(tmp_path / "none.yaml"), sql="SELECT 1")
         assert result.exit_code == EXIT_ERROR
+
+
+class TestWarehouse:
+    """``refresh`` and ``check`` without ``--catalog``, against a DuckDB warehouse."""
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> Path:
+        import duckdb
+
+        with duckdb.connect(str(tmp_path / "shop.duckdb")) as db:
+            db.execute(
+                "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, user_id VARCHAR);"
+                "CREATE TABLE users (user_id VARCHAR PRIMARY KEY, country VARCHAR)"
+            )
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text(
+            "warehouse: {type: duckdb, path: shop.duckdb}\n"
+            f"cache: {{path: {tmp_path / 'cache.sqlite'}}}\n",
+            encoding="utf-8",
+        )
+        return config
+
+    def test_refresh(self, config: Path) -> None:
+        result = runner.invoke(app, ["refresh", "--config", str(config)])
+        assert result.exit_code == EXIT_OK, result.output
+        assert re.fullmatch(r"refreshed 2 tables in \d+\.\d s\n", result.stdout)
+
+    def test_check_without_catalog(self, config: Path) -> None:
+        sql = "SELECT usr_id FROM orders"
+        result = runner.invoke(app, ["check", "--config", str(config), "-"], input=sql)
+        assert result.exit_code == EXIT_BLOCKED, result.output
+        assert "SCN001" in result.stdout
+        assert "shop.main.orders" in result.stdout
+        ok = runner.invoke(
+            app, ["check", "--config", str(config), "-"], input="SELECT country FROM users LIMIT 5"
+        )
+        assert ok.exit_code == EXIT_OK, ok.output
+
+    def test_check_without_catalog_or_warehouse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["check", "-"], input="SELECT 1")
+        assert result.exit_code == EXIT_ERROR
+        assert "give --catalog" in result.stderr
+
+    def test_refresh_without_warehouse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["refresh"])
+        assert result.exit_code == EXIT_ERROR
+        assert "names no warehouse" in result.stderr
+
+    def test_refresh_of_a_missing_database(self, config: Path) -> None:
+        (config.parent / "shop.duckdb").unlink()
+        result = runner.invoke(app, ["refresh", "--config", str(config)])
+        assert result.exit_code == EXIT_ERROR
+        assert "no such DuckDB file" in result.stderr
+
+    def test_table_created_after_refresh(self, config: Path) -> None:
+        import duckdb
+
+        assert runner.invoke(app, ["refresh", "--config", str(config)]).exit_code == EXIT_OK
+        with duckdb.connect(str(config.parent / "shop.duckdb")) as db:
+            db.execute("CREATE TABLE refunds (order_id INTEGER, amount DOUBLE)")
+        result = runner.invoke(
+            app, ["check", "--config", str(config), "-"], input="SELECT amount FROM refunds LIMIT 5"
+        )
+        assert result.exit_code == EXIT_OK, result.output
+        assert "SCN001" not in result.stdout
+
+    def test_doctor(self, config: Path) -> None:
+        result = runner.invoke(app, ["doctor", "--config", str(config)])
+        assert result.exit_code == EXIT_OK, result.output
+        lines = result.stdout.splitlines()
+        assert lines[0].startswith("ok    metadata: 2 tables in ")
+        assert lines[1] == "ok    cache: empty: the first check or `scanisaur refresh` fills it"
+        runner.invoke(app, ["refresh", "--config", str(config)])
+        result = runner.invoke(app, ["doctor", "--config", str(config)])
+        assert "ok    cache: 2 tables, refreshed 0 min ago" in result.stdout
+
+    def test_doctor_fails(self, config: Path) -> None:
+        (config.parent / "shop.duckdb").unlink()
+        result = runner.invoke(app, ["doctor", "--config", str(config)])
+        assert result.exit_code == EXIT_BLOCKED
+        assert result.stdout.startswith("fail  metadata: ")
+
+    def test_doctor_without_warehouse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == EXIT_ERROR
+        assert "names no warehouse" in result.stderr
+
+
+class TestInit:
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+    def test_bigquery_with_options(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "--warehouse",
+                "bigquery",
+                "--project",
+                "acme",
+                "--location",
+                "EU",
+                "--dataset",
+                "analytics",
+                "--dataset",
+                "yes",
+            ],
+        )
+        assert result.exit_code == EXIT_OK, result.output
+        config = load_config(tmp_path / "scanisaur.yaml")
+        assert config.warehouse == BigQueryWarehouse(
+            type="bigquery", project="acme", location="EU", include_datasets=("analytics", "yes")
+        )
+        assert config.policy == DEFAULT_POLICY
+        assert "SA=scanisaur-catalog@acme.iam.gserviceaccount.com" in result.stdout
+        assert "roles/$role" in result.stdout
+        assert "scanisaur doctor" in result.stdout
+
+    def test_bigquery_prompts(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["init"], input="\nacme\n\na, b\n")
+        assert result.exit_code == EXIT_OK, result.output
+        warehouse = load_config(tmp_path / "scanisaur.yaml").warehouse
+        assert warehouse == BigQueryWarehouse(
+            type="bigquery", project="acme", location="US", include_datasets=("a", "b")
+        )
+
+    def test_duckdb(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["init", "--warehouse", "duckdb"], input="shop.duckdb\n")
+        assert result.exit_code == EXIT_OK, result.output
+        warehouse = load_config(tmp_path / "scanisaur.yaml").warehouse
+        assert warehouse == DuckDBWarehouse(type="duckdb", path=tmp_path / "shop.duckdb")
+        assert "gcloud" not in result.stdout
+
+    def test_refuses_to_overwrite(self, tmp_path: Path) -> None:
+        (tmp_path / "scanisaur.yaml").write_text("policy: {}\n", encoding="utf-8")
+        result = runner.invoke(app, ["init", "--warehouse", "duckdb", "--path", "x.duckdb"])
+        assert result.exit_code == EXIT_ERROR
+        assert "--force" in result.stderr
+        assert (tmp_path / "scanisaur.yaml").read_text(encoding="utf-8") == "policy: {}\n"
+        forced = runner.invoke(
+            app, ["init", "--warehouse", "duckdb", "--path", "x.duckdb", "--force"]
+        )
+        assert forced.exit_code == EXIT_OK
+
+    def test_unknown_warehouse(self) -> None:
+        result = runner.invoke(app, ["init", "--warehouse", "snowflake"])
+        assert result.exit_code == 2  # a usage error, from the option's choices
+        assert "'snowflake' is not one of" in result.stderr
+
+    def test_unknown_warehouse_answer(self) -> None:
+        result = runner.invoke(app, ["init"], input="snowflake\n")
+        assert result.exit_code == 2
+        assert "use bigquery or duckdb" in result.stderr
