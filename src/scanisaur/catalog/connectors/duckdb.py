@@ -92,7 +92,7 @@ class DuckDBConnector:
                     kind=table_kind,
                     row_count=rows,
                     description=comment or "",
-                    keys=tuple(keys[key]) if kind == "TABLE" else None,
+                    keys=tuple(keys[key]) if keys.get(key) else None,  # None: not known
                 )
             )
         return tuple(tables)

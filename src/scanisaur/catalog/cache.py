@@ -64,13 +64,15 @@ class MetadataCache:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = Path(path)
 
-    def load(self) -> Snapshot | None:
-        """The latest snapshot, or None when nothing has been saved."""
+    def load(self, *, warehouse: str | None = None) -> Snapshot | None:
+        """The latest snapshot, or None when nothing has been saved (for ``warehouse``,
+        when given: a snapshot saved for another one doesn't count)."""
         with self._connect() as db, db:
             db.execute("BEGIN")  # one read transaction, so a concurrent save can't split it
             row = db.execute(
                 "SELECT id, fetched_at, default_project, default_dataset"
-                " FROM snapshots ORDER BY id DESC LIMIT 1"
+                " FROM snapshots WHERE ?1 IS NULL OR warehouse = ?1 ORDER BY id DESC LIMIT 1",
+                (warehouse,),
             ).fetchone()
             if row is None:
                 return None
@@ -83,7 +85,7 @@ class MetadataCache:
         except ValidationError as error:
             logger.warning("%s: discarding a cache this version can't read: %s", self.path, error)
             with self._connect() as db:
-                _rebuild(db)
+                _rebuild(db, force=True)
             return None
         return Snapshot(
             catalog=Catalog(tables, default_project=project, default_dataset=dataset),
@@ -219,15 +221,22 @@ class MetadataCache:
             raise CacheError(f"{self.path}: {error}") from error
 
 
-def _rebuild(db: sqlite3.Connection) -> None:
+def _rebuild(db: sqlite3.Connection, *, force: bool = False) -> None:
     """Empty the file and create this version's tables."""
     with db:
+        # One write transaction, so two processes rebuilding at once take turns; the
+        # second finds the work done. (executescript would commit midway.)
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION and not force:
+            return
         for (name,) in db.execute(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             " AND name NOT LIKE 'search_%'"
         ).fetchall():
             db.execute(f'DROP TABLE IF EXISTS "{name}"')
-        db.executescript(_SCHEMA)
+        for statement in _SCHEMA.split(";"):
+            if statement.strip():
+                db.execute(statement)
         with suppress(sqlite3.OperationalError):  # no FTS5 in this SQLite build
             db.execute(_SEARCH_SCHEMA)
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

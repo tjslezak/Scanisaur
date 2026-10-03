@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -175,3 +176,20 @@ def test_put_table_after_another_process_saved(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.snapshot_id == newer.snapshot_id
     assert loaded.catalog.find("users", "d", "p") is None  # the newer snapshot is untouched
+
+
+def test_concurrent_first_opens_dont_collide(tmp_path: Path) -> None:
+    errors: list[Exception] = []
+
+    def load() -> None:
+        try:
+            MetadataCache(tmp_path / "c.sqlite").load()
+        except CacheError as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=load) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []

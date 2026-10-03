@@ -130,7 +130,9 @@ def test_new_table_is_fetched_once(tmp_path: Path, connector: FakeConnector) -> 
     assert users.keys == (("user_id",),)
     assert connector.lookups == [("p", "d", "users")]  # not the CTE, not orders
     # Saved: a new process finds it without asking the warehouse.
-    again = _source(tmp_path, connector, clock).snapshot_for(sql)
+    again = _source(tmp_path, connector, clock, keys={"p.d.users": (("user_id",),)}).snapshot_for(
+        sql
+    )
     assert again.catalog.find("users") is not None
     assert connector.lookups == [("p", "d", "users")]
 
@@ -166,10 +168,19 @@ def test_fresh_cache_never_connects(
         warehouse=DuckDBWarehouse(type="duckdb", path=tmp_path / "w.duckdb"),
         cache=CacheSettings(path=tmp_path / "c.sqlite"),
     )
-    MetadataCache(tmp_path / "c.sqlite").save(connector.fetch_catalog(), warehouse="w")
+    CachedSource(config, connector=connector).refresh()
 
     def refuse(_: object) -> None:
         raise AssertionError("connected")
 
     monkeypatch.setattr("scanisaur.catalog.cached.connect", refuse)
     assert CachedSource(config).current().catalog.find("orders", "d") is not None
+
+
+def test_changed_keys_start_a_fresh_snapshot(tmp_path: Path, connector: FakeConnector) -> None:
+    _source(tmp_path, connector, Clock()).current()
+    keyed = _source(tmp_path, connector, Clock(), keys={"p.d.orders": (("order_id",),)})
+    orders = keyed.current().catalog.find("orders", "d")
+    assert orders is not None
+    assert orders.keys == (("order_id",),)
+    assert connector.fetches == 2

@@ -53,7 +53,7 @@ def test_fetch_catalog(database: Path) -> None:
     events = catalog.find("events")
     assert events is not None
     assert events.row_count == 2
-    assert events.keys == ()
+    assert events.keys is None  # no constraint: unknown, not "nothing unique"
     assert events.column("tags") == Column("tags", "ARRAY<STRING>")
     view = catalog.find("big_orders")
     assert view is not None

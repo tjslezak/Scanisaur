@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import replace
@@ -45,7 +46,8 @@ class CachedSource:
         self._connector = connector
         # Named from config, so a fresh cache never imports the warehouse driver.
         name = config.warehouse.name if config.warehouse else self.connector.name
-        self._cache = cache or MetadataCache(_cache_path(config, name))
+        self._identity = _identity(config, name)
+        self._cache = cache or MetadataCache(_cache_path(config, self._identity))
         self._now = now
         self._snapshot: Snapshot | None = None
 
@@ -59,7 +61,7 @@ class CachedSource:
     def cached(self) -> Snapshot | None:
         """The saved snapshot, without contacting the warehouse."""
         if self._snapshot is None:
-            self._snapshot = self._cache.load()
+            self._snapshot = self._cache.load(warehouse=self._identity)
         return self._snapshot
 
     def current(self) -> Snapshot:
@@ -105,7 +107,7 @@ class CachedSource:
     def refresh(self) -> Snapshot:
         """Fetch the whole catalog now and make it current."""
         catalog = self.connector.fetch_catalog()
-        self._snapshot = self._cache.save(self._with_keys(catalog), warehouse=self.connector.name)
+        self._snapshot = self._cache.save(self._with_keys(catalog), warehouse=self._identity)
         return self._snapshot
 
     def search(self, query: str, limit: int) -> list[SearchHit]:
@@ -122,6 +124,15 @@ class CachedSource:
             return catalog
         tables = tuple(with_keys(t, keys.get(t.qualified_name)) for t in catalog.tables)
         return replace(catalog, tables=tables)
+
+
+def _identity(config: Config, name: str) -> str:
+    """The warehouse plus the settings that shape its snapshot, so changing any of them
+    starts a fresh snapshot, and two configs on one warehouse don't share one."""
+    settings = config.warehouse.model_dump_json() if config.warehouse else ""
+    keys = json.dumps({table: config.keys[table] for table in sorted(config.keys)})
+    digest = hashlib.sha256(f"{settings}{keys}".encode()).hexdigest()[:16]
+    return f"{name}#{digest}"
 
 
 def _cache_path(config: Config, warehouse: str) -> Path:
