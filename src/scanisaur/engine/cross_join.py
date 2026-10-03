@@ -124,9 +124,11 @@ def _message(product: Product, sizes: list[_Size], pairs: int | None, exact: boo
         else:
             opening += ", so every row of each pairs with every row of the others"
     if pairs is not None and exact:
-        amount = f"about {_count(pairs)} pairs"
+        amount = f"about {format_count(pairs)} pairs"
     elif pairs is not None:
-        amount = f"up to about {_count(pairs)} pairs, fewer if filters or joins leave fewer rows"
+        amount = (
+            f"up to about {format_count(pairs)} pairs, fewer if filters or joins leave fewer rows"
+        )
     else:
         unknown = [name for name, size in zip(names, sizes, strict=True) if size.rows is None]
         amount = f"how many isn't known, as {_join_words(unknown)} may hold any number of rows"
@@ -212,7 +214,7 @@ def _join_words(words: list[str], conjunction: str = "and") -> str:
 _UNITS = ((10**6, "million"), (10**9, "billion"), (10**12, "trillion"), (10**15, "quadrillion"))
 
 
-def _count(n: int) -> str:
+def format_count(n: int) -> str:
     """A count in words, as 3.1 billion, moving up a unit when rounding reaches 1,000."""
     if n < 10**6:
         return f"{n:,}"

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN009",
+      "severity": "warn",
+      "message": "The query returns every row it reads of `proj.analytics.users`, about 5 million rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
+      "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
+      "line": 1,
+      "column": 30
+    }
+  ],
+  "tables": [
+    "proj.analytics.users"
+  ],
+  "estimate": {
+    "bytes_low": 860880896,
+    "bytes_high": 860880896,
+    "confidence": "medium",
+    "usd_low": 0.0049,
+    "usd_high": 0.0049
+  }
+}

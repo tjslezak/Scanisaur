@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `u.user_id = s.bucket`: it doesn't convert between STRING and INT64 to compare them, so the query fails before it reads anything.",
+      "fix": "Convert one side to the other's type, as `CAST(s.bucket AS STRING)`, or `SAFE_CAST(u.user_id AS INT64)` if the text holds whole numbers.",
+      "line": 2,
+      "column": 27
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.web.scores"
+  ],
+  "estimate": {
+    "bytes_low": 871366656,
+    "bytes_high": 15260975104,
+    "confidence": "low",
+    "usd_low": 0.005,
+    "usd_high": 0.0867
+  }
+}

@@ -9,6 +9,14 @@
       "fix": "Add a filter on `event_date`, for example `event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
       "line": 1,
       "column": 21
+    },
+    {
+      "rule": "SCN009",
+      "severity": "warn",
+      "message": "The query returns every row it reads of `proj.analytics.events`, about 1.2 billion rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
+      "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
+      "line": 1,
+      "column": 21
     }
   ],
   "tables": [
