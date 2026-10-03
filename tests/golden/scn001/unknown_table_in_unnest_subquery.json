@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Table `analytics.sessions` does not exist.",
+      "fix": "Did you mean `analytics.users`?",
+      "line": 3,
+      "column": 57
+    }
+  ],
+  "tables": [
+    "proj.analytics.users"
+  ],
+  "estimate": null
+}
