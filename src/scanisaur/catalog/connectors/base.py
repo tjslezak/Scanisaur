@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Literal, Protocol
 
 from scanisaur.catalog.model import Catalog, Table
@@ -22,6 +24,21 @@ class Probe:
     detail: str
 
 
+@dataclass(frozen=True, slots=True)
+class QueryRun:
+    """One query the warehouse ran, from its query history."""
+
+    job_id: str
+    started: datetime
+    #: The account that ran it, when history says.
+    user: str | None
+    sql: str
+    #: None when BigQuery hides billing, for example for row-level security.
+    bytes_billed: int | None
+    #: BigQuery error reason; None for a successful execution.
+    error_reason: str | None = None
+
+
 class Connector(Protocol):
     #: Identifies the warehouse, such as ``bigquery:acme-analytics:US``.
     @property
@@ -37,6 +54,11 @@ class Connector(Protocol):
 
     def check_access(self) -> list[Probe]:
         """Whether the account can read metadata, and whether it can also read data."""
+        ...
+
+    def fetch_query_history(self, since: datetime) -> Iterator[QueryRun]:
+        """SELECT queries run since ``since``, oldest first, raising ConnectorError when
+        the warehouse keeps no history or the account can't read it."""
         ...
 
 
