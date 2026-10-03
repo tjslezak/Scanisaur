@@ -27,6 +27,8 @@ from scanisaur.errors import ScanisaurError
 SCHEMA_VERSION = 1
 
 _TABLE_JSON = TypeAdapter(Table)
+#: How long to keep retrying a journal-mode switch that finds the file locked.
+_LOCK_WAIT_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -226,14 +228,18 @@ class MetadataCache:
 
 
 def _use_wal(db: sqlite3.Connection) -> None:
-    """Switch to WAL. While another connection creates the file, SQLite can answer this
-    pragma with "database is locked" at once instead of waiting, so retry briefly."""
-    for attempt in range(_WAL_ATTEMPTS):
+    """Switch to WAL, retrying while another connection holds the lock.
+
+    Changing the journal mode doesn't wait for a lock the way other statements do, so
+    connections opening a new file at once can see "database is locked".
+    """
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
         try:
             db.execute("PRAGMA journal_mode = WAL")
             return
         except sqlite3.OperationalError as error:
-            if "locked" not in str(error) or attempt == _WAL_ATTEMPTS - 1:
+            if "locked" not in str(error) or time.monotonic() > deadline:
                 raise
             time.sleep(0.01)
 
