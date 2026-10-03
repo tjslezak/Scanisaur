@@ -342,6 +342,11 @@ class TestUnnest:
             "SELECT a FROM t WHERE e = r'a@x.com' AND b = b'xy' AND h = 0xFF AND c IN (r'q')",
             "SELECT a FROM t WHERE e = ? AND b = ? AND h = ? AND c IN (?)",
         ),
+        ("SELECT TRUE, FALSE, NULL, -1, +2, -1.5e3", "SELECT ?, ?, ?, ?, ?, ?"),
+        ("SELECT a FROM t WHERE c IN (-1, 2, -3)", "SELECT a FROM t WHERE c IN (?)"),
+        ("SELECT a FROM t WHERE c IN (TRUE, FALSE, NULL)", "SELECT a FROM t WHERE c IN (?)"),
+        ("SELECT a FROM t WHERE c IN (-1, -d)", "SELECT a FROM t WHERE c IN (?, -d)"),
+        ("SELECT -d FROM t", "SELECT -d FROM t"),
         # SQL that doesn't parse is shaped by pattern.
         (
             "SELEC a FROM t WHERE b = 'it\\'s -- x' and c=1.5e3 # note",
@@ -367,3 +372,15 @@ def test_shape_never_keeps_a_value(monkeypatch: pytest.MonkeyPatch) -> None:
     # A literal kind the type list misses falls back to the pattern shape.
     monkeypatch.setattr("scanisaur.engine.check._LITERALS", (exp.Literal,))
     assert shape("SELECT a FROM t WHERE e = r'a@x.com'") == "SELECT a FROM t WHERE e = r?"
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("SELECT a FROM t WHERE active = TRUE", "SELECT a FROM t WHERE active = FALSE"),
+        ("SELECT a FROM t WHERE id = -1", "SELECT a FROM t WHERE id = 2"),
+        ("SELECT a FROM t WHERE id IN (-1, -2)", "SELECT a FROM t WHERE id IN (1, 2, 3)"),
+    ],
+)
+def test_shape_fingerprint_normalizes_constants(left: str, right: str) -> None:
+    assert shape_fingerprint(left) == shape_fingerprint(right)

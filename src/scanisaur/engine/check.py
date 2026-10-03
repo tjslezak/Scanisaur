@@ -63,6 +63,8 @@ _LITERALS = (
     exp.BitString,
     exp.National,
     exp.UnicodeString,
+    exp.Boolean,
+    exp.Null,
 )
 #: A value left in a shape: a quoted string or a hex number.
 _VALUE = re.compile(r"['\"]|\b0[xX][0-9a-fA-F]+\b")
@@ -378,13 +380,20 @@ def _digest(text: str) -> str:
 
 
 def _placeholder(node: exp.Expr) -> exp.Expr:
-    if isinstance(node, _LITERALS):
+    if _is_constant(node):
         return exp.Placeholder()
     values = node.expressions if isinstance(node, exp.In) else []
-    if values and all(isinstance(value, _LITERALS) for value in values):
+    if values and all(_is_constant(value) for value in values):
         node = node.copy()
         node.set("expressions", [exp.Placeholder()])
     return node
+
+
+def _is_constant(node: exp.Expr) -> bool:
+    """Literal values, including numbers represented by a unary minus."""
+    return isinstance(node, _LITERALS) or (
+        isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal) and node.this.is_number
+    )
 
 
 def _rough_shape(text: str) -> str:
