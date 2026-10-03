@@ -382,4 +382,3 @@ def _format(result: CheckResult) -> str:
         lines.append(f"estimate: {describe_estimate(result.estimate)}")
     lines.append(f"tag: {result.tag}")
     return "\n".join(lines)
-
