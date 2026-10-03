@@ -217,7 +217,10 @@ class MetadataCache:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(self.path)) as db:
-                db.execute("PRAGMA journal_mode = WAL")
+                # Switching to WAL ignores the busy timeout, so a concurrent first open
+                # can find the file locked; the setting is persistent, and one switch is enough.
+                with suppress(sqlite3.OperationalError):
+                    db.execute("PRAGMA journal_mode = WAL")
                 db.execute("PRAGMA foreign_keys = ON")
                 if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                     _rebuild(db)
