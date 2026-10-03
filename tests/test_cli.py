@@ -250,3 +250,15 @@ class TestWarehouse:
         result = runner.invoke(app, ["refresh", "--config", str(config)])
         assert result.exit_code == EXIT_ERROR
         assert "no such DuckDB file" in result.stderr
+
+    def test_table_created_after_refresh(self, config: Path) -> None:
+        import duckdb
+
+        assert runner.invoke(app, ["refresh", "--config", str(config)]).exit_code == EXIT_OK
+        with duckdb.connect(str(config.parent / "shop.duckdb")) as db:
+            db.execute("CREATE TABLE refunds (order_id INTEGER, amount DOUBLE)")
+        result = runner.invoke(
+            app, ["check", "--config", str(config), "-"], input="SELECT amount FROM refunds LIMIT 5"
+        )
+        assert result.exit_code == EXIT_OK, result.output
+        assert "SCN001" not in result.stdout

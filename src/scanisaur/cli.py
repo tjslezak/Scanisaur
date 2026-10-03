@@ -12,7 +12,6 @@ import typer
 from scanisaur import __version__
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.fixtures import load_catalog
-from scanisaur.catalog.model import Catalog
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config
 from scanisaur.engine.check import check
 from scanisaur.engine.pruning import format_bytes
@@ -112,7 +111,9 @@ def check_command(
     """
     try:
         settings = _config(config)
-        loaded = _catalog(catalog, settings)
+        if catalog is None and settings.warehouse is None:
+            raise ConfigError(f"give --catalog, or name a warehouse in {CONFIG_FILE}")
+        fixture = None if catalog is None else load_catalog(catalog)
     except ScanisaurError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
@@ -121,6 +122,11 @@ def check_command(
         sql = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         typer.echo(f"error: {'standard input' if source == '-' else source}: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    try:
+        loaded = fixture or CachedSource(settings).snapshot_for(sql).catalog
+    except ScanisaurError as error:
+        typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
 
     if allow_writes:
@@ -165,15 +171,6 @@ def _config(path: Path | None) -> Config:
     if path is None and Path(CONFIG_FILE).is_file():
         path = Path(CONFIG_FILE)
     return Config() if path is None else load_config(path)
-
-
-def _catalog(fixture: Path | None, config: Config) -> Catalog:
-    """The fixture when given; otherwise the configured warehouse, through the cache."""
-    if fixture is not None:
-        return load_catalog(fixture)
-    if config.warehouse is None:
-        raise ConfigError(f"give --catalog, or name a warehouse in {CONFIG_FILE}")
-    return CachedSource(config).current().catalog
 
 
 def _format(result: CheckResult) -> str:

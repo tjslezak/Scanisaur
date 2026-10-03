@@ -17,6 +17,8 @@ class FakeConnector:
         self.tables = [Table("p", "d", "orders", (Column("order_id", "INT64"),))]
         self.fetches = 0
         self.fail = False
+        self.new: dict[str, Table] = {}
+        self.lookups: list[tuple[str, str, str]] = []
 
     def fetch_catalog(self) -> Catalog:
         if self.fail:
@@ -25,7 +27,10 @@ class FakeConnector:
         return Catalog(tuple(self.tables), default_project="p", default_dataset="d")
 
     def fetch_table(self, project: str, dataset: str, name: str) -> Table | None:
-        return None
+        self.lookups.append((project, dataset, name))
+        if self.fail:
+            raise ConnectorError("warehouse down")
+        return self.new.get(name)
 
     def check_access(self) -> list[Probe]:
         return []
@@ -111,3 +116,44 @@ def test_search(tmp_path: Path, connector: FakeConnector) -> None:
 def test_needs_a_warehouse() -> None:
     with pytest.raises(ConfigError, match="names no warehouse"):
         CachedSource(Config())
+
+
+def test_new_table_is_fetched_once(tmp_path: Path, connector: FakeConnector) -> None:
+    clock = Clock()
+    source = _source(tmp_path, connector, clock, keys={"p.d.users": (("user_id",),)})
+    source.current()
+    connector.new["users"] = Table("p", "d", "users", (Column("user_id", "INT64"),))
+    sql = "WITH u AS (SELECT 1 AS x) SELECT * FROM users JOIN orders USING (user_id), u"
+    snapshot = source.snapshot_for(sql)
+    users = snapshot.catalog.find("users")
+    assert users is not None
+    assert users.keys == (("user_id",),)
+    assert connector.lookups == [("p", "d", "users")]  # not the CTE, not orders
+    # Saved: a new process finds it without asking the warehouse.
+    again = _source(tmp_path, connector, clock).snapshot_for(sql)
+    assert again.catalog.find("users") is not None
+    assert connector.lookups == [("p", "d", "users")]
+
+
+def test_missing_table_stays_missing(tmp_path: Path, connector: FakeConnector) -> None:
+    source = _source(tmp_path, connector, Clock())
+    snapshot = source.snapshot_for("SELECT * FROM nope")
+    assert snapshot.catalog.find("nope") is None
+    assert connector.lookups == [("p", "d", "nope")]
+
+
+def test_lookup_failure_is_a_warning(
+    tmp_path: Path, connector: FakeConnector, caplog: pytest.LogCaptureFixture
+) -> None:
+    source = _source(tmp_path, connector, Clock())
+    source.current()
+    connector.fail = True
+    assert source.snapshot_for("SELECT * FROM nope").catalog.find("nope") is None
+    assert "couldn't look up p.d.nope" in caplog.text
+
+
+def test_unparsable_sql_is_left_to_check(tmp_path: Path, connector: FakeConnector) -> None:
+    source = _source(tmp_path, connector, Clock())
+    source.snapshot_for("SELECT FROM WHERE (")
+    source.snapshot_for("DROP TABLE x")
+    assert connector.lookups == []

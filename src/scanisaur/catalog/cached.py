@@ -17,6 +17,8 @@ from scanisaur.catalog.connectors.base import with_keys
 from scanisaur.catalog.model import Catalog
 from scanisaur.catalog.source import SearchHit, Snapshot
 from scanisaur.config import Config, ConfigError
+from scanisaur.engine.parse import DIALECT, SqlParseError, parse, resolvable
+from scanisaur.engine.resolve import unknown_tables
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,35 @@ class CachedSource:
             except ConnectorError as error:
                 logger.warning("using a stale catalog, refresh failed: %s", error)
         return self._snapshot
+
+    def snapshot_for(self, sql: str) -> Snapshot:
+        """The current snapshot, with any table ``sql`` reads that it lacks fetched once.
+
+        A table created since the last refresh would otherwise be reported as unknown
+        (SCN001) until the next one.
+        """
+        snapshot = self.current()
+        try:
+            statements = parse(sql, DIALECT)
+        except SqlParseError:
+            return snapshot  # check() reports it
+        missing = {
+            name
+            for statement in statements
+            if (tree := resolvable(statement)) is not None
+            for name in unknown_tables(tree, snapshot.catalog)
+        }
+        for project, dataset, name in sorted(missing):
+            try:
+                table = self.connector.fetch_table(project, dataset, name)
+            except ConnectorError as error:
+                logger.warning("couldn't look up %s.%s.%s: %s", project, dataset, name, error)
+                continue
+            if table is not None:
+                table = with_keys(table, self._config.keys.get(table.qualified_name))
+                snapshot = self._cache.put_table(snapshot, table)
+        self._snapshot = snapshot
+        return snapshot
 
     def refresh(self) -> Snapshot:
         """Fetch the whole catalog now and make it current."""
