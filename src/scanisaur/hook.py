@@ -21,7 +21,6 @@ import shlex
 import socket
 import stat
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict, cast
@@ -90,6 +89,8 @@ def socket_path(catalog: Path, config: Path | None) -> Path:
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime:
         return Path(runtime) / "scanisaur" / name
+    import tempfile  # only here: it adds a few ms to every hook call
+
     user = os.getuid() if hasattr(os, "getuid") else "user"
     return Path(tempfile.gettempdir()) / f"scanisaur-{user}" / name
 
@@ -233,7 +234,7 @@ def request_check(path: Path, sql: str) -> CheckJson | None:
         answer = json.loads(response)
     except ValueError:
         return None
-    if not isinstance(answer, dict) or answer.get("verdict") not in ("pass", "warn", "block"):
+    if not isinstance(answer, dict) or answer.get("verdict") not in _VERDICTS:
         return None
     return cast(CheckJson, answer)
 
@@ -253,19 +254,27 @@ def _read_line(client: socket.socket) -> bytes:
 
 
 def check_all(queries: list[str], path: Path, catalog: Path, config: Path | None) -> CheckJson:
-    """Check each query with the server at ``path``, or in this process when none answers."""
-    return worst([request_check(path, sql) or check_here(sql, catalog, config) for sql in queries])
+    """Check each query with the server at ``path``, or in this process when it doesn't
+    answer them all."""
+    answers = [request_check(path, sql) for sql in queries]
+    results = [a for a in answers if a is not None]
+    if len(results) < len(queries):
+        results = check_here(queries, catalog, config)
+    return worst(results)
 
 
-def check_here(sql: str, catalog: Path, config: Path | None) -> CheckJson:
+def check_here(queries: list[str], catalog: Path, config: Path | None) -> list[CheckJson]:
     """Check without a server. Imports the engine, so it costs a few hundred ms."""
     from scanisaur.catalog.fixtures import load_catalog
     from scanisaur.config import load_policy
     from scanisaur.engine.check import DEFAULT_POLICY, check
 
     policy = DEFAULT_POLICY if config is None else load_policy(config)
-    result = check(sql, load_catalog(catalog), policy=policy)
-    return cast(CheckJson, result.model_dump(mode="json"))
+    loaded = load_catalog(catalog)
+    return [
+        cast(CheckJson, check(sql, loaded, policy=policy).model_dump(mode="json"))
+        for sql in queries
+    ]
 
 
 def worst(results: list[CheckJson]) -> CheckJson:

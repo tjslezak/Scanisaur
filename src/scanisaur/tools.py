@@ -135,9 +135,9 @@ def check_sql(
     result = check(sql, snapshot.catalog, policy=policy, now=now)
     findings = result.findings
     if len(findings) > MAX_FINDINGS:
-        # sorted() is stable, so equally severe findings keep the order of the SQL.
-        ranked = sorted(range(len(findings)), key=lambda i: _SEVERITY_ORDER[findings[i].severity])
-        findings = tuple(findings[i] for i in sorted(ranked[:MAX_FINDINGS]))
+        # Keep the most severe, then put them back in the order of the SQL.
+        ranked = sorted(enumerate(findings), key=lambda pair: _SEVERITY_ORDER[pair[1].severity])
+        findings = tuple(finding for _, finding in sorted(ranked[:MAX_FINDINGS]))
     return result.model_copy(
         update={
             "findings": findings,
@@ -203,9 +203,9 @@ def _describe(table: Table) -> TableDescription:
             important.add(table.partitioning.column.lower())
         for key in table.keys or ():
             important.update(name.lower() for name in key)
-        first = [c for c in columns if c.name.lower() in important]
-        rest = [c for c in columns if c.name.lower() not in important]
-        columns = tuple((first + rest)[:MAX_COLUMNS])
+        # sorted() is stable: important columns first, each group in table order.
+        columns = tuple(sorted(columns, key=lambda c: c.name.lower() not in important))
+        columns = columns[:MAX_COLUMNS]
     return TableDescription(
         table=table.qualified_name,
         kind=table.kind,
