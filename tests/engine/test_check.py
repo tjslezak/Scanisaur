@@ -8,7 +8,7 @@ from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.engine import check as check_module
 from scanisaur.engine.check import Policy, check, fingerprint, new_check_id, tag_for
 from scanisaur.engine.resolve import ResolveError
-from scanisaur.engine.result import Severity, Verdict
+from scanisaur.engine.result import CheckResult, Finding, Severity, Verdict
 from scanisaur.engine.rules import UNANALYZABLE, UNKNOWN_IDENTIFIER, WRITE_STATEMENT
 
 CATALOG = load_catalog(Path(__file__).parents[1] / "golden" / "catalog.yaml")
@@ -169,6 +169,50 @@ class TestCheck:
         assert finding.fix == "Check the table and column names by hand before running it."
 
 
+class TestTooDeep:
+    """SQL nested deeper than Python's stack allows is unanalyzable, not a crash."""
+
+    WHERE = " FROM events WHERE event_date = '2026-09-01'"
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT " + "(" * 200 + "user_id" + ")" * 200 + WHERE,
+            "SELECT " + "CASE WHEN user_id > 1 THEN " * 200 + "1" + " END" * 200 + WHERE,
+            "SELECT * FROM " + "(SELECT * FROM " * 500 + "events" + ")" * 500 + WHERE,
+        ],
+        ids=["parentheses", "case", "subqueries"],
+    )
+    def test_warns_by_default(self, sql: str) -> None:
+        result = check(sql, CATALOG)
+        assert result.verdict is Verdict.WARN
+        (finding,) = result.findings
+        assert (finding.rule, finding.severity) == (UNANALYZABLE, Severity.WARN)
+        assert finding.message == "The SQL is nested too deeply to analyze."
+        assert result.tables == ()
+        assert result.estimate is None
+        assert result.tag == tag_for(sql)
+
+    def test_blocks_when_failing_closed(self) -> None:
+        sql = "SELECT " + "(" * 200 + "user_id" + ")" * 200 + self.WHERE
+        result = check(sql, CATALOG, policy=Policy(fail_mode="closed"))
+        assert result.verdict is Verdict.BLOCK
+        assert result.findings[0].severity is Severity.BLOCK
+
+    def test_too_deep_after_parsing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fail(*_args: object) -> None:
+            raise RecursionError
+
+        monkeypatch.setattr(check_module, "estimate", fail)
+        result = check("SELECT user_id" + self.WHERE, CATALOG)
+        assert [f.rule for f in result.findings] == [UNANALYZABLE]
+        assert result.estimate is None
+
+    def test_shallower_nesting_is_checked(self) -> None:
+        sql = "SELECT " + "(" * 20 + "usr_id" + ")" * 20 + self.WHERE
+        assert [f.rule for f in check(sql, CATALOG).findings] == [UNKNOWN_IDENTIFIER]
+
+
 class TestCatalogEdges:
     def test_unparsable_catalog_type_is_unanalyzable(self) -> None:
         table = Table("p", "d", "t", (Column("a", "INT64"), Column("b", "NOT A TYPE")))
@@ -206,3 +250,71 @@ class TestDefaults:
         catalog = Catalog(tables=(self.TABLE,))
         result = check("SELECT user_id FROM `proj.analytics.events`", catalog)
         assert result.verdict is Verdict.PASS
+
+
+def _unknown_names(result: CheckResult) -> list[Finding]:
+    """SCN001 findings only; cost rules may also warn about these queries."""
+    return [finding for finding in result.findings if finding.rule == UNKNOWN_IDENTIFIER]
+
+
+class TestUnnest:
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT nope FROM events e, UNNEST(SPLIT(e.event_name)) AS s",  # a function result
+            "SELECT nope FROM events e, UNNEST(e.device.os)",  # a nested path
+            "SELECT nope FROM events e, UNNEST(e.event_name)",  # not an array
+            "SELECT nope FROM events e, UNNEST(e.params, e.params)",
+            "SELECT nope FROM UNNEST([STRUCT(1 AS x)])",
+            "WITH c AS (SELECT params FROM events) SELECT nope FROM c, UNNEST(c.params)",
+        ],
+    )
+    def test_unknown_elements_stand_down(self, sql: str) -> None:
+        assert _unknown_names(check(sql, CATALOG)) == []
+
+    def test_two_unaliased_unnests(self) -> None:
+        # sqlglot gives both the same empty name and failed with "Alias already used".
+        sql = "SELECT e.user_id, nope FROM events e, UNNEST(e.params), UNNEST([1, 2])"
+        result = check(sql, CATALOG)
+        assert [f.message for f in _unknown_names(result)] == [
+            "Column `nope` does not exist in `proj.analytics.events`, the UNNEST or the UNNEST."
+        ]
+
+    @staticmethod
+    def _catalog(type_: str) -> Catalog:
+        table = Table("proj", "analytics", "t", (Column("xs", type_),))
+        return Catalog(tables=(table,), default_project="proj", default_dataset="analytics")
+
+    def test_unnamed_struct_fields_stand_down(self) -> None:
+        catalog = self._catalog("ARRAY<STRUCT<INT64>>")
+        assert _unknown_names(check("SELECT nope FROM t, UNNEST(xs)", catalog)) == []
+
+    def test_catalog_array_of_scalars_exposes_only_its_alias(self) -> None:
+        catalog = self._catalog("ARRAY<STRING>")
+        (finding,) = _unknown_names(check("SELECT x, nope FROM t, UNNEST(xs) AS x", catalog))
+        assert finding.message == "Column `nope` does not exist in `proj.analytics.t` or `x`."
+
+    def test_offset_without_alias_is_named_offset(self) -> None:
+        sql = "SELECT key, offset FROM events, UNNEST(params) WITH OFFSET"
+        assert _unknown_names(check(sql, CATALOG)) == []
+
+    def test_correlated_unnest_of_outer_column(self) -> None:
+        sql = "SELECT (SELECT COUNT(*) FROM UNNEST(e.params) p WHERE p.kye = 'x') FROM events e"
+        (finding,) = _unknown_names(check(sql, CATALOG))
+        assert finding.fix == "Did you mean `p.key`?"
+
+    def test_field_in_two_unnests_is_ambiguous(self) -> None:
+        sql = "SELECT key FROM events e, UNNEST(e.params) a, UNNEST(e.params) b"
+        (finding,) = _unknown_names(check(sql, CATALOG))
+        assert finding.message == "Column `key` is ambiguous: it exists in `a`, `b`."
+        assert finding.fix == "Qualify it, for example `a.key`."
+
+    def test_wrong_alias_points_at_the_unnest_field(self) -> None:
+        sql = "SELECT e.key FROM events e, UNNEST(e.params) AS p"
+        (finding,) = _unknown_names(check(sql, CATALOG))
+        assert finding.fix == "Did you mean `p.key`?"
+
+    def test_unknown_alias_lists_only_written_aliases(self) -> None:
+        sql = "SELECT q.key FROM events e, UNNEST(e.params) AS p"
+        (finding,) = _unknown_names(check(sql, CATALOG))
+        assert finding.fix == "Use one of: `e`, `p`."

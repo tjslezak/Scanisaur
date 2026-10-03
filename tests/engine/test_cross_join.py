@@ -159,6 +159,12 @@ class TestLimit:
         assert finding.severity is Severity.WARN
         assert "The LIMIT 10 stops BigQuery early" in finding.message
 
+    def test_an_offset_needs_the_skipped_pairs(self) -> None:
+        sql = "SELECT * FROM users AS u CROSS JOIN orders AS o LIMIT 10 OFFSET 1000000000"
+        (finding,) = scn006(sql)
+        assert finding.severity is Severity.BLOCK
+        assert "stops BigQuery early" not in finding.message
+
     def test_sorting_needs_every_pair(self) -> None:
         sql = "SELECT * FROM users AS u CROSS JOIN orders AS o ORDER BY u.age LIMIT 10"
         assert [f.severity for f in scn006(sql)] == [Severity.BLOCK]
@@ -206,4 +212,4 @@ class TestFix:
     ],
 )
 def test_count(n: int, words: str) -> None:
-    assert cross_join._count(n) == words
+    assert cross_join.format_count(n) == words

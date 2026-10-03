@@ -161,3 +161,19 @@ tables:
       region: STRING
       store: STRING
       amount: NUMERIC
+  # For SCN008: a local DATETIME, and a visitor ID loaded as FLOAT64.
+  - name: proj.shop.visits
+    rows: 2000000
+    bytes: 112000000
+    columns:
+      visit_id: INT64
+      visitor_id: FLOAT64
+      started_at: DATETIME
+      visit_day: DATE
+      opened: TIME
+  - name: proj.shop.visitors
+    rows: 300000
+    bytes: 6000000
+    columns:
+      visitor_id: INT64
+      country: STRING

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `e.event_ts > CURRENT_DATE()`: it doesn't convert between TIMESTAMP and DATE to compare them, so the query fails before it reads anything.",
+      "fix": "Compare days with `DATE(e.event_ts)`, or convert the date with `TIMESTAMP(CURRENT_DATE())`, which is midnight UTC.",
+      "line": 2,
+      "column": 41
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 19200475136,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 0.1091
+  }
+}

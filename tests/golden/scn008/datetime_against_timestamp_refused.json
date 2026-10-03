@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `v.started_at > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)`: it doesn't convert between DATETIME and TIMESTAMP to compare them, so the query fails before it reads anything.",
+      "fix": "Convert one side: `DATETIME(TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY))` reads the timestamp in UTC, and `TIMESTAMP(v.started_at)` reads the datetime as UTC.",
+      "line": 2,
+      "column": 9
+    }
+  ],
+  "tables": [
+    "proj.shop.visits"
+  ],
+  "estimate": {
+    "bytes_low": 16777216,
+    "bytes_high": 16777216,
+    "confidence": "high",
+    "usd_low": 0.0001,
+    "usd_high": 0.0001
+  }
+}

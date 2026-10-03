@@ -16,5 +16,10 @@ SELECT_STAR = "SCN005"
 CROSS_JOIN = "SCN006"
 #: A join on columns that aren't a unique key, which repeats rows a count or sum then counts.
 FAN_OUT = "SCN007"
+#: A comparison between types BigQuery refuses to compare, or compares in a way that
+#: changes the answer: a date against a timestamp, an integer against a float.
+TYPE_MISMATCH = "SCN008"
+#: A query that returns every row of a large table: no LIMIT, aggregate or filter bounds it.
+UNBOUNDED_RESULT = "SCN009"
 #: A filter on a later cluster column with none on the leading one, so clustering helps little.
 CLUSTER_PREFIX = "SCN011"

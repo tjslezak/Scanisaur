@@ -30,6 +30,12 @@ class TestQueries:
         with pytest.raises(ValueError, match="more than once"):
             run.load_queries(path)
 
+    def test_missing_sql_names_the_query(self, tmp_path: Path) -> None:
+        path = tmp_path / "queries.yaml"
+        path.write_text("- {id: a}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="query a needs a string id and sql"):
+            run.load_queries(path)
+
 
 class TestDryRunOutput:
     def test_json_job(self) -> None:
@@ -238,10 +244,11 @@ tables:
         path = tmp_path / "catalog.yaml"
         path.write_text(self.CATALOG, encoding="utf-8")
         queries = [
-            run.Query("one-day", "SELECT n FROM `o.d.t` WHERE day = '2026-09-30'"),
+            # A LIMIT keeps SCN009 quiet; the table isn't clustered, so it bills the same.
+            run.Query("one-day", "SELECT n FROM `o.d.t` WHERE day = '2026-09-30' LIMIT 10"),
             run.Query("all", "SELECT n FROM `o.d.t`", ("SCN003",)),
             run.Query("count", "SELECT COUNT(*) FROM `o.d.t` WHERE day = '1999-01-01'"),
-            run.Query("missing", "SELECT n FROM `o.d.t` WHERE day = '2026-09-29'"),
+            run.Query("missing", "SELECT n FROM `o.d.t` WHERE day = '2026-09-29' LIMIT 10"),
         ]
         runs = run.DryRuns(measured_at=NOW, bytes=bytes_, errors=errors)
         return run.outcomes(queries, load_catalog(path), runs)
@@ -352,7 +359,8 @@ tables:
         paths["CATALOG"].write_text(self.CATALOG, encoding="utf-8")
         paths["TABLES"].write_text("tables: [o.d.t]\nkeys: {o.d.t: [[day]]}\n", encoding="utf-8")
         paths["QUERIES"].write_text(
-            "- {id: q, sql: \"SELECT n FROM `o.d.t` WHERE day = '2026-09-30'\"}\n", encoding="utf-8"
+            "- {id: q, sql: \"SELECT n FROM `o.d.t` WHERE day = '2026-09-30' LIMIT 10\"}\n",
+            encoding="utf-8",
         )
         run.save_dry_runs(run.DryRuns(measured_at=NOW, bytes={"q": 8 * 2**30}), paths["DRY_RUNS"])
         for name, path in paths.items():

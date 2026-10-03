@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `p.views > '1000'`: it doesn't convert between INT64 and STRING to compare them, so the query fails before it reads anything.",
+      "fix": "Write the number without quotes, as `1000`.",
+      "line": 2,
+      "column": 70
+    }
+  ],
+  "tables": [
+    "proj.web.pageviews"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 2045000024064,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 11.6245
+  }
+}

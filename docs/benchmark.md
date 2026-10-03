@@ -1,6 +1,6 @@
 # Dry-run benchmark
 
-Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (76 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read. A dry run gives only a query's total, so a query reading several tables shows the bill as a range when it can't tell how the bytes split between them.
+Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (84 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read. A dry run gives only a query's total, so a query reading several tables shows the bill as a range when it can't tell how the bytes split between them.
 
 ## Cost estimate
 
@@ -18,39 +18,39 @@ Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026
 
 BigQuery rejected 3 queries. Scanisaur gives 3 of them no estimate, as intended.
 
-Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cross-join`, `thelook-join-inequality-only`, `thelook-join-connected-later`, `thelook-join-or-of-keys`, `thelook-large-cross-join`, `thelook-items-ordered-repeated`, `thelook-items-ordered`, `thelook-orders-counted-per-item`, `thelook-orders-counted-distinct`, `thelook-age-weighted-by-events`, `thelook-age-of-buyers`, `thelook-items-joined-on-user`, `thelook-items-joined-on-order`.
+Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cross-join`, `thelook-join-inequality-only`, `thelook-join-connected-later`, `thelook-join-or-of-keys`, `thelook-large-cross-join`, `thelook-items-ordered-repeated`, `thelook-items-ordered`, `thelook-orders-counted-per-item`, `thelook-orders-counted-distinct`, `thelook-age-weighted-by-events`, `thelook-age-of-buyers`, `thelook-items-joined-on-user`, `thelook-items-joined-on-order`, `thelook-orders-through-month-end`, `thelook-orders-half-open-month`, `thelook-user-id-quoted`, `thelook-user-id-number`, `pageviews-hour-equals-day`, `thelook-users-every-row`, `thelook-users-by-country`, `thelook-users-sample`.
 
 ## Rules
 
 | Queries | Count | As expected |
 | --- | --- | --- |
-| Traps (a rule should fire) | 30 | 30 |
-| Others (no rule should fire) | 46 | 46 |
+| Traps (a rule should fire) | 39 | 39 |
+| Others (no rule should fire) | 45 | 45 |
 
 ## Every query
 
 | Query | Billed (dry run) | Estimate | High / billed | Rules expected | Rules found |
 | --- | --- | --- | --- | --- | --- |
-| `trends-one-day` | 47.2 MB | 44 MB (medium) | 0.93 | none | none |
-| `trends-no-filter` | 1.2 GB | 1 GB (medium) | 0.89 | SCN003 | SCN003 |
+| `trends-one-day` | 47.2 MB | 44 MB (medium) | 0.93 | SCN009 | SCN009 |
+| `trends-no-filter` | 1.2 GB | 1 GB (medium) | 0.89 | SCN003, SCN009 | SCN003, SCN009 |
 | `trends-week-instead-of-refresh-date` | 1.5 GB | 1.4 GB (medium) | 0.91 | SCN003 | SCN003 |
 | `trends-week-and-refresh-date` | 58.7 MB | 55.6 MB (medium) | 0.95 | none | none |
 | `trends-last-week` | 268.4 MB | 309.3 MB to 355.5 MB (medium) | 1.32 | none | none |
-| `trends-range-of-days` | 507.5 MB | 438.3 MB (medium) | 0.86 | none | none |
-| `trends-two-days-in-list` | 71.3 MB | 66.1 MB (medium) | 0.93 | none | none |
+| `trends-range-of-days` | 507.5 MB | 438.3 MB (medium) | 0.86 | SCN009 | SCN009 |
+| `trends-two-days-in-list` | 71.3 MB | 66.1 MB (medium) | 0.93 | SCN009 | SCN009 |
 | `trends-cast-to-string` | 1.2 GB | 1 GB (medium) | 0.89 | SCN004 | SCN004 |
 | `trends-extract-month` | 1.2 GB | 1 GB (medium) | 0.89 | SCN004 | SCN004 |
-| `trends-date-trunc-week` | 241.2 MB | 227.5 MB (medium) | 0.94 | none | none |
+| `trends-date-trunc-week` | 241.2 MB | 227.5 MB (medium) | 0.94 | SCN009 | SCN009 |
 | `trends-preview` | 99.6 MB | 99.6 MB (medium) | 1.00 | none | none |
 | `trends-preview-every-partition` | 3.1 GB | 3.1 GB (medium) | 1.00 | SCN003, SCN005 | SCN003, SCN005 |
-| `trends-star-except` | 2.8 GB | 2.8 GB (medium) | 1.00 | SCN003, SCN005 | SCN003, SCN005 |
+| `trends-star-except` | 2.8 GB | 2.8 GB (medium) | 1.00 | SCN003, SCN005, SCN009 | SCN003, SCN005, SCN009 |
 | `trends-limit-zero` | 0 B | 0 B (high) | 1.00 | none | none |
 | `trends-count-star` | 0 B | 0 B (high) | 1.00 | none | none |
 | `trends-group-by` | 39.8 MB | 33.6 MB (medium) | 0.84 | none | none |
 | `trends-having-on-partition-column` | 11.5 MB | 11.5 MB (high) | 1.00 | none | none |
 | `trends-cte-read-twice` | 49.3 MB | 55.6 MB (medium) | 1.13 | none | none |
 | `trends-self-join-two-days` | 71.3 MB | 66.1 MB (medium) | 0.93 | none | none |
-| `trends-union-of-days` | 76.5 MB | 68.2 MB (medium) | 0.89 | none | none |
+| `trends-union-of-days` | 76.5 MB | 68.2 MB (medium) | 0.89 | SCN009 | SCN009 |
 | `pageviews-one-article` | 810.5 MB | 10.5 MB to 10 GB (medium) | 12.30 ** | none | none |
 | `pageviews-title-without-wiki` | 6.7 GB | 10.5 MB to 6.7 GB (medium) | 1.01 | SCN011 | SCN011 |
 | `pageviews-lower-title` | 1.7 GB | 10.5 MB to 10 GB (medium) | 5.95 ** | SCN004 | SCN004 |
@@ -104,6 +104,14 @@ Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cros
 | `thelook-age-of-buyers` | not measured | 65 MB (medium) | - | none | none |
 | `thelook-items-joined-on-user` | not measured | 21 MB (low) | - | SCN007 | SCN007 |
 | `thelook-items-joined-on-order` | not measured | 21 MB (low) | - | none | none |
+| `thelook-orders-through-month-end` | not measured | 10.5 MB (low) | - | SCN008 | SCN008 |
+| `thelook-orders-half-open-month` | not measured | 10.5 MB (low) | - | none | none |
+| `thelook-user-id-quoted` | not measured | 10.5 MB (low) | - | SCN008 | SCN008 |
+| `thelook-user-id-number` | not measured | 10.5 MB (low) | - | none | none |
+| `pageviews-hour-equals-day` | not measured | 10.5 MB to 10 GB (medium) | - | SCN008 | SCN008 |
+| `thelook-users-every-row` | not measured | 10.5 MB (medium) | - | SCN009 | SCN009 |
+| `thelook-users-by-country` | not measured | 10.5 MB (medium) | - | none | none |
+| `thelook-users-sample` | not measured | 10.5 MB (medium) | - | none | none |
 | `mix-trending-articles` | 1.5 GB | 54.5 MB to 8.1 GB (medium) | 5.33 ** | none | none |
 | `mix-trends-unfiltered` | 2.6 GB | 1 GB to 9.1 GB (medium) | 3.44 ** | SCN003 | SCN003 |
 | `mix-pageviews-unfiltered` | rejected: can be used for partition elimination | none | - | SCN003 | SCN003 |

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`v.started_at = v.visit_day` compares DATETIME `v.started_at` with a date, which means midnight, so it matches only midnight, not the whole day.",
+      "fix": "Compare days instead: `DATE(v.started_at)` in place of `v.started_at`.",
+      "line": 2,
+      "column": 9
+    }
+  ],
+  "tables": [
+    "proj.shop.visits"
+  ],
+  "estimate": {
+    "bytes_low": 32505856,
+    "bytes_high": 32505856,
+    "confidence": "high",
+    "usd_low": 0.0002,
+    "usd_high": 0.0002
+  }
+}

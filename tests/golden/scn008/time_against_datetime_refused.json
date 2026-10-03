@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `v.opened = v.started_at`: it doesn't convert between TIME and DATETIME to compare them, so the query fails before it reads anything.",
+      "fix": "Convert one side with `CAST` so both sides have the same type.",
+      "line": 2,
+      "column": 9
+    }
+  ],
+  "tables": [
+    "proj.shop.visits"
+  ],
+  "estimate": {
+    "bytes_low": 32505856,
+    "bytes_high": 32505856,
+    "confidence": "high",
+    "usd_low": 0.0002,
+    "usd_high": 0.0002
+  }
+}

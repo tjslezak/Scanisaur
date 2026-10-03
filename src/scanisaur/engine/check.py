@@ -35,10 +35,14 @@ from scanisaur.engine.rules import (
     WRITE_STATEMENT,
 )
 from scanisaur.engine.select_star import select_star_findings
+from scanisaur.engine.type_mismatch import type_mismatch_findings
+from scanisaur.engine.unbounded import unbounded_result_findings
 
 #: Fixes for SQL that can't be analyzed.
 _SEND_ONE = "Send one complete SQL query."
 _BY_HAND = "Check the table and column names by hand before running it."
+_TOO_DEEP = "The SQL is nested too deeply to analyze."
+_FLATTEN = "Move nested subqueries into WITH clauses, or nest fewer expressions."
 
 #: Crockford base32, lowercase: sortable and unambiguous to read aloud.
 _ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
@@ -63,6 +67,9 @@ class Policy:
     #: side's size is known. Slot time grows by about 10 seconds per billion pairs (#23).
     cross_join_warn_pairs: int = 10**8
     cross_join_block_pairs: int = 10**10
+    #: SCN009 warns when a query returns at least this many rows of a table, every row it
+    #: reads, with no LIMIT or aggregate.
+    unbounded_result_rows: int = 10_000
 
 
 DEFAULT_POLICY = Policy()
@@ -79,11 +86,18 @@ def check(
     """``now`` evaluates ``CURRENT_DATE()`` and the like in the cost estimate."""
     check_id = check_id or new_check_id()
     now = now or datetime.now(UTC)
-    findings, tables, analyzed = _analyze(sql, catalog, policy, now)
     cost: Estimate | None = None
-    if analyzed is not None and not _rejected(findings) and not _unseen_reads(analyzed[0]):
-        resolution, facts = analyzed
-        cost = estimate(facts, now, policy.price_per_tib, _sampled(resolution))
+    try:
+        findings, tables, analyzed = _analyze(sql, catalog, policy, now)
+        if analyzed is not None and not _rejected(findings) and not _unseen_reads(analyzed[0]):
+            resolution, facts = analyzed
+            cost = estimate(facts, now, policy.price_per_tib, _sampled(resolution))
+    except RecursionError:
+        # sqlglot and the rules walk the tree recursively. BigQuery accepts SQL nested
+        # deeper than Python's stack allows (about 46 parentheses or 51 CASEs at the
+        # default limit), so this is SQL that can't be analyzed, not SQL that is wrong.
+        findings = [_unanalyzable(policy, _TOO_DEEP, _FLATTEN)]
+        tables, cost = (), None
     return CheckResult(
         check_id=check_id,
         tag=tag_for(sql),
@@ -135,28 +149,32 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy, now: datetime) -> _Anal
         return [_unanalyzable(policy, message, _BY_HAND)], (), None
     if resolution.findings:
         return list(resolution.findings), resolution.tables, None
-    findings, facts = _rule_findings(resolution, policy, now)
+    findings, facts = _rule_findings(resolution, policy, now, returns_rows=kind == "query")
     return findings, resolution.tables, None if facts is None else (resolution, facts)
 
 
 def _rule_findings(
-    resolution: Resolution, policy: Policy, now: datetime
+    resolution: Resolution, policy: Policy, now: datetime, *, returns_rows: bool
 ) -> tuple[list[Finding], QueryFacts | None]:
-    """Findings from the rules that read per-table facts (SCN003 to SCN007, SCN011), and
-    the facts for the cost estimate."""
+    """Findings from the rules that read the qualified tree (SCN008) or per-table facts
+    (SCN003 to SCN007, SCN009, SCN011), and the facts for the cost estimate.
+    ``returns_rows`` is False for a statement that writes its result to a table."""
     try:
         facts = extract(resolution)
     except TooComplexError as error:
+        mismatches = type_mismatch_findings(resolution)
         if not any(t.partitioning or t.clustering or t.is_wildcard for t in resolution.tables):
-            return [], None  # no rule could apply
+            return _ordered(mismatches), None  # no facts-based rule could apply
         message = f"Partition and cluster filters weren't checked: {error}."
-        return [_unanalyzable(policy, message, "Check those filters by hand.")], None
+        unchecked = _unanalyzable(policy, message, "Check those filters by hand.")
+        return _ordered([unchecked, *mismatches]), None
     except FactsError:
         return [], None  # nothing is read, e.g. CREATE TABLE without a query
     if facts.outer_limit == 0:
         # Measured: BigQuery returns only the schema. It reads nothing, and doesn't require
-        # a partition filter even on a table that needs one, so no rule applies.
-        return [], facts
+        # a partition filter even on a table that needs one, so only a comparison it
+        # refuses to compile still matters.
+        return _ordered(type_mismatch_findings(resolution, rows_read=False)), facts
     pruning = pruning_findings(facts)
     star = select_star_findings(
         facts, now, sampled=_sampled(resolution), rejected=_rejected(pruning)
@@ -169,10 +187,21 @@ def _rule_findings(
         sampled=_sampled(resolution),
     )
     fan_out = fan_out_findings(facts)
-    findings = sorted(
-        [*pruning, *star, *cross, *fan_out], key=lambda f: (f.line or 0, f.column or 0, f.rule)
-    )
-    return findings, facts
+    mismatches = type_mismatch_findings(resolution)
+    unbounded: list[Finding] = []
+    if returns_rows and not _rejected(pruning):
+        unbounded = unbounded_result_findings(
+            resolution,
+            facts,
+            now,
+            warn_rows=policy.unbounded_result_rows,
+            sampled=_sampled(resolution),
+        )
+    return _ordered([*pruning, *star, *cross, *fan_out, *mismatches, *unbounded]), facts
+
+
+def _ordered(findings: list[Finding]) -> list[Finding]:
+    return sorted(findings, key=lambda f: (f.line or 0, f.column or 0, f.rule))
 
 
 def _rejected(findings: list[Finding]) -> bool:

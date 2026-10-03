@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `nope` does not exist in `proj.analytics.events` or the UNNEST.",
+      "fix": "Columns of the UNNEST: `key`, `value`.",
+      "line": 1,
+      "column": 8
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": null
+}

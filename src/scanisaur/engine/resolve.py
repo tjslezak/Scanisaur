@@ -22,6 +22,7 @@ from scanisaur.catalog.model import PARTITIONDATE, PARTITIONTIME, TABLE_SUFFIX, 
 from scanisaur.engine.parse import position
 from scanisaur.engine.result import Finding, Severity
 from scanisaur.engine.rules import UNKNOWN_IDENTIFIER
+from scanisaur.errors import ScanisaurError
 
 #: Where each BigQuery pseudo-column exists, and what to do instead.
 _PSEUDO_HOMES = {
@@ -62,7 +63,7 @@ if not {_STAR_EXCEPT, _STAR_REPLACE} <= set(exp.Star.arg_types):  # pragma: no c
     raise ImportError("unsupported sqlglot version: exp.Star lacks except_ or replace")
 
 
-class ResolveError(Exception):
+class ResolveError(ScanisaurError):
     """sqlglot failed for a reason that isn't an unknown name."""
 
 
@@ -99,14 +100,36 @@ class _Source:
     #: How findings name it: a catalog table's full name, a CTE or subquery name in
     #: backticks, or "the subquery" when the query didn't name it.
     shown: str
-    #: Its column names; None when they can't be known, as for UNNEST.
+    #: Its column names; None when they can't be known, as for UNNEST of a function result.
     columns: tuple[str, ...] | None
     pseudo_columns: frozenset[str] = frozenset()
     in_catalog: bool = False
+    #: An UNNEST: qualify() names it `_0`, so its columns are written bare, or as fields
+    #: of its range variable (`p` in `UNNEST(x) AS p`) when its elements are STRUCTs.
+    unnest: bool = False
+    range_variable: str | None = None
+    #: The fields of the range variable's STRUCTs.
+    fields: tuple[str, ...] = ()
 
     def has(self, name: str) -> bool:
-        lowered = name.lower()
-        return self.columns is not None and any(c.lower() == lowered for c in self.columns)
+        return self.columns is not None and _contains(self.columns, name)
+
+    def reference(self, alias: str, name: str) -> str:
+        """How a query writes column ``name`` of this source, selected as ``alias``."""
+        if not self.unnest:
+            return f"{alias}.{name}"
+        if self.range_variable is not None and _contains(self.fields, name):
+            return f"{self.range_variable}.{name}"
+        return name
+
+    def written_alias(self, alias: str) -> str | None:
+        """The alias the query wrote, rather than one qualify() made up."""
+        return self.range_variable if self.unnest else alias
+
+
+def _contains(names: Iterable[str], name: str) -> bool:
+    lowered = name.lower()
+    return any(n.lower() == lowered for n in names)
 
 
 #: The sources a column can name: its own scope's first, then each enclosing scope a
@@ -117,6 +140,8 @@ _Visible = list[dict[str, _Source]]
 def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     tree = tree.copy()  # names are respelled and completed in place below
     _match_cte_case(tree)
+    _name_unnests(tree)
+    _scope_in_unnest(tree)
     try:
         references = [node for scope in traverse_scope(tree) for node in _table_nodes(scope)]
     except SqlglotError as error:
@@ -140,7 +165,7 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     try:
         qualified = qualify(
             tree,
-            schema=_schema(by_reference),
+            schema=sqlglot_schema(by_reference),
             dialect=dialect,
             validate_qualify_columns=False,
             allow_partial_qualification=True,
@@ -152,7 +177,7 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
         return Resolution(None, tables, (finding,))
     except SqlglotError as error:  # e.g. a catalog column type sqlglot can't parse
         raise ResolveError(str(error)) from error
-    findings = list(_column_findings(qualified, by_reference))
+    findings = list(_column_findings(qualified, by_reference, dialect))
     return Resolution(qualified, tables, _unique(findings), by_reference)
 
 
@@ -256,6 +281,28 @@ def _record_stars(tree: exp.Expr) -> None:
             select.meta[_STARS] = tuple(stars)
 
 
+def _name_unnests(tree: exp.Expr) -> None:
+    """Name each UNNEST written without an alias. sqlglot's scopes give them all the same empty
+    name, so two in one FROM fail with "Alias already used". The names have no position
+    in the SQL, and messages never show them."""
+    for index, unnest in enumerate(tree.find_all(exp.Unnest)):
+        if unnest.args.get("alias") is None and isinstance(unnest.parent, exp.From | exp.Join):
+            unnest.set("alias", exp.TableAlias(this=exp.to_identifier(f"_unnest{index}")))
+
+
+def _scope_in_unnest(tree: exp.Expr) -> None:
+    """Respell ``x IN UNNEST((SELECT ...))`` as ``x IN UNNEST(ARRAY(SELECT ...))``. sqlglot's
+    scopes skip a subquery there, so the tables it reads would go unchecked and unbilled.
+    The rewrite only changes how the query is scoped; checks read its tables and columns."""
+    for node in tree.find_all(exp.In):
+        unnest = node.args.get("unnest")
+        if not isinstance(unnest, exp.Unnest):
+            continue
+        for argument in unnest.expressions:
+            if isinstance(argument, exp.Subquery) and isinstance(argument.this, exp.Query):
+                argument.replace(exp.Array(expressions=[argument.this]))
+
+
 def _complete_name(node: exp.Table, table: Table) -> None:
     """Write the project and dataset the defaults filled in.
 
@@ -268,7 +315,7 @@ def _complete_name(node: exp.Table, table: Table) -> None:
         node.set("catalog", exp.to_identifier(table.project))
 
 
-def _schema(by_reference: dict[TableKey, Table]) -> dict[str, object]:
+def sqlglot_schema(by_reference: Mapping[TableKey, Table]) -> dict[str, object]:
     """A sqlglot schema for the referenced tables only, keyed by the names as written."""
     schema: dict[str, dict[str, dict[str, dict[str, str]]]] = {}
     for (project, dataset, name), table in by_reference.items():
@@ -277,17 +324,19 @@ def _schema(by_reference: dict[TableKey, Table]) -> dict[str, object]:
     return dict(schema)
 
 
-def _column_findings(qualified: exp.Expr, by_reference: dict[TableKey, Table]) -> Iterator[Finding]:
+def _column_findings(
+    qualified: exp.Expr, by_reference: dict[TableKey, Table], dialect: str
+) -> Iterator[Finding]:
     for scope in traverse_scope(qualified):
         if isinstance(scope.expression, exp.SetOperation):
             yield from _set_operation_columns(scope)  # each branch is a scope of its own
             continue
-        visible = _visible(scope, by_reference)
+        visible = _visible(scope, by_reference, dialect)
         for column in _own_columns(scope):
             if column.name.upper() in _PSEUDO_HOMES:
                 continue
             if column.table:
-                finding = _check_qualified(column, visible)
+                finding = _check_qualified(column, visible) or _check_field(column, visible)
             else:
                 finding = _check_unqualified(column, visible)
             if finding is not None:
@@ -297,16 +346,16 @@ def _column_findings(qualified: exp.Expr, by_reference: dict[TableKey, Table]) -
             yield from _check_star(star, visible)
 
 
-def _visible(scope: Scope, by_reference: dict[TableKey, Table]) -> _Visible:
+def _visible(scope: Scope, by_reference: dict[TableKey, Table], dialect: str) -> _Visible:
     levels: _Visible = []
     current: Scope | None = scope
     while current is not None:
-        levels.append(_sources(current, by_reference))
+        levels.append(_sources(current, by_reference, dialect))
         current = _outer(current)
     return levels
 
 
-def _sources(scope: Scope, by_reference: dict[TableKey, Table]) -> dict[str, _Source]:
+def _sources(scope: Scope, by_reference: dict[TableKey, Table], dialect: str) -> dict[str, _Source]:
     sources: dict[str, _Source] = {}
     for alias, (node, source) in scope.selected_sources.items():
         if isinstance(source, exp.Table) and not _in_catalog(source):
@@ -322,6 +371,8 @@ def _sources(scope: Scope, by_reference: dict[TableKey, Table]) -> dict[str, _So
             selects = tuple(source.expression.named_selects)
             columns = None if "*" in selects else selects
             sources[alias] = _Source(_derived_name(node, alias), columns)
+        elif isinstance(node, exp.Unnest):
+            sources[alias] = _unnest_source(node, scope, by_reference, dialect)
         else:
             sources[alias] = _Source(f"`{alias}`", None)
     return sources
@@ -338,6 +389,77 @@ def _derived_name(node: exp.Expr, alias: str) -> str:
     if isinstance(identifier, exp.Identifier) and identifier.meta:
         return f"`{alias}`"
     return "the subquery"
+
+
+def _unnest_source(
+    unnest: exp.Unnest, scope: Scope, by_reference: dict[TableKey, Table], dialect: str
+) -> _Source:
+    """What an UNNEST exposes, when its elements' type can be known.
+
+    BigQuery makes each field of a STRUCT element a column, whether or not the UNNEST
+    is aliased; the alias names the element itself, and `WITH OFFSET` adds the position,
+    named `offset` unless aliased.
+    """
+    alias = unnest.args.get("alias")
+    columns = alias.columns if isinstance(alias, exp.TableAlias) else []
+    range_variable = columns[0].name if columns else None
+    offset = unnest.args.get("offset")
+    shown = f"`{range_variable}`" if range_variable else "the UNNEST"
+    fields = _element_fields(unnest, scope, by_reference, dialect)
+    if fields is None:
+        return _Source(shown, None, unnest=True, range_variable=range_variable)
+    names = [range_variable] if range_variable else []
+    if isinstance(offset, exp.Identifier):
+        names.append(offset.name)
+    names.extend(fields)
+    return _Source(shown, tuple(names), unnest=True, range_variable=range_variable, fields=fields)
+
+
+def _element_fields(
+    unnest: exp.Unnest, scope: Scope, by_reference: dict[TableKey, Table], dialect: str
+) -> tuple[str, ...] | None:
+    """The STRUCT fields of the array's elements; () for scalars, None when unknown."""
+    if len(unnest.expressions) != 1:
+        return None
+    array = unnest.expressions[0]
+    if isinstance(array, exp.Array):
+        return () if all(isinstance(e, exp.Literal) for e in array.expressions) else None
+    type_ = _column_type(array, scope, by_reference) if isinstance(array, exp.Column) else None
+    if type_ is None:
+        return None
+    try:
+        built = exp.DataType.build(type_, dialect=dialect)
+    except SqlglotError:
+        return None
+    if not built.is_type(exp.DataType.Type.ARRAY) or not built.expressions:
+        return None
+    element = built.expressions[0]
+    if not isinstance(element, exp.DataType) or not element.is_type(exp.DataType.Type.STRUCT):
+        return ()
+    fields = tuple(field.name for field in element.expressions)
+    return fields if all(fields) else None
+
+
+def _column_type(
+    column: exp.Column, scope: Scope, by_reference: dict[TableKey, Table]
+) -> str | None:
+    """The catalog type of a table column the query names, as ``e.params`` or ``params``.
+
+    qualify() has attached unqualified names to their table; nested paths are left out.
+    """
+    if not column.table or len(column.parts) != 2:
+        return None
+    current: Scope | None = scope
+    while current is not None:  # the table may be outside a correlated subquery
+        if column.table in current.selected_sources:
+            _node, source = current.selected_sources[column.table]
+            if not isinstance(source, exp.Table) or not _in_catalog(source):
+                return None
+            table = by_reference.get((source.catalog, source.db, source.name))
+            found = table.column(column.name) if table is not None else None
+            return found.type if found is not None else None
+        current = _outer(current)
+    return None
 
 
 def _outer(scope: Scope) -> Scope | None:
@@ -365,10 +487,10 @@ def _check_qualified(column: exp.Column, visible: _Visible) -> Finding | None:
     if source.columns is None or source.has(name):
         return None
     # Another source having the column usually means the wrong alias, not a typo.
-    elsewhere = [f"{a}.{name}" for level in visible for a, s in level.items() if s.has(name)]
-    similar = [f"{alias}.{match}" for match in _closest(name, source.columns)]
+    elsewhere = [s.reference(a, name) for level in visible for a, s in level.items() if s.has(name)]
+    similar = [source.reference(alias, match) for match in _closest(name, source.columns)]
     return _finding(
-        f"Column `{alias}.{name}` does not exist in {source.shown}.",
+        f"Column `{source.reference(alias, name)}` does not exist in {source.shown}.",
         _suggest(elsewhere or similar) or _no_match([source]),
         column,
     )
@@ -380,7 +502,8 @@ def _lookup(alias: str, visible: _Visible) -> _Source | None:
 
 def _unknown_alias(column: exp.Column, visible: _Visible, name: str | None = None) -> Finding:
     alias, name = column.table, name or column.name
-    known = sorted({known for level in visible for known in level})
+    written = (s.written_alias(a) for level in visible for a, s in level.items())
+    known = sorted({known for known in written if known is not None})
     return _finding(
         f"`{alias}.{name}` uses `{alias}`, which isn't a table or alias in this query.",
         _suggest(_closest(alias, known)) or f"Use one of: {_listing(known)}.",
@@ -393,13 +516,16 @@ def _check_unqualified(column: exp.Column, visible: _Visible) -> Finding | None:
     for level in visible:
         if any(source.columns is None for source in level.values()):
             return None  # it may come from a source whose columns can't be known
-        owners = [alias for alias, source in level.items() if source.has(name)]
+        owners = [(alias, source) for alias, source in level.items() if source.has(name)]
         if len(owners) == 1:
             return None
         if owners:
+            shown = ", ".join(s.shown if s.unnest else f"`{a}`" for a, s in owners)
+            qualified = [s.reference(a, name) for a, s in owners]
+            example = next((q for q in qualified if "." in q), qualified[0])
             return _finding(
-                f"Column `{name}` is ambiguous: it exists in {_listing(owners)}.",
-                f"Qualify it, for example `{owners[0]}.{name}`.",
+                f"Column `{name}` is ambiguous: it exists in {shown}.",
+                f"Qualify it, for example `{example}`.",
                 column,
             )
     nearest = list(visible[0].values()) if visible else []
@@ -408,6 +534,31 @@ def _check_unqualified(column: exp.Column, visible: _Visible) -> Finding | None:
         f"Column `{name}` does not exist in {_where(nearest)}.",
         _suggest(_closest(name, candidates)) or _no_match(nearest),
         column,
+    )
+
+
+def _check_field(column: exp.Column, visible: _Visible) -> Finding | None:
+    """``p.name`` on the range variable of an UNNEST of STRUCTs must name a field.
+
+    qualify() writes ``p.name`` as the field ``name`` of the column ``_0.p``.
+    """
+    dot = column.parent
+    if not isinstance(dot, exp.Dot) or dot.this is not column:
+        return None
+    source = _lookup(column.table, visible)
+    if source is None or source.range_variable is None or not source.fields:
+        return None
+    variable = source.range_variable
+    if column.name.lower() != variable.lower():
+        return None
+    field = dot.expression
+    if _contains(source.fields, field.name):
+        return None
+    similar = [f"{variable}.{match}" for match in _closest(field.name, source.fields)]
+    return _finding(
+        f"`{variable}.{field.name}` does not exist: `{variable}` has no field `{field.name}`.",
+        _suggest(similar) or f"Fields of `{variable}`: {_listing(source.fields)}.",
+        field,
     )
 
 

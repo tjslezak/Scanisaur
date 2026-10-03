@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `e.user_id IN (1, 2, 3)`: it doesn't convert between STRING and INT64 to compare them, so the query fails before it reads anything.",
+      "fix": "Quote the value, as `'1'`, if the column holds text.",
+      "line": 2,
+      "column": 41
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 356400496640,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 2.0259
+  }
+}
