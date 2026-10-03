@@ -20,7 +20,11 @@ def connect(warehouse: BigQueryWarehouse | DuckDBWarehouse) -> Connector:
                 raise ConnectorError(_install("duckdb")) from error
             return DuckDBConnector(warehouse)
         case BigQueryWarehouse():
-            raise ConnectorError("the BigQuery connector isn't built yet")
+            try:
+                from scanisaur.catalog.connectors.bigquery import BigQueryConnector
+            except ImportError as error:
+                raise ConnectorError(_install("bigquery")) from error
+            return BigQueryConnector(warehouse)
         case _:
             assert_never(warehouse)
 
