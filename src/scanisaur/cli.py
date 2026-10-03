@@ -159,6 +159,8 @@ def _log_check(settings: Config, result: CheckResult, sql: str) -> None:
         append(log_directory(settings.log), entry)
     except OSError as error:
         typer.echo(f"warning: decision log not written: {error}", err=True)
+
+
 @app.command("serve")
 def serve_command(
     catalog: Annotated[
