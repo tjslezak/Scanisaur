@@ -169,6 +169,50 @@ class TestCheck:
         assert finding.fix == "Check the table and column names by hand before running it."
 
 
+class TestTooDeep:
+    """SQL nested deeper than Python's stack allows is unanalyzable, not a crash."""
+
+    WHERE = " FROM events WHERE event_date = '2026-09-01'"
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT " + "(" * 200 + "user_id" + ")" * 200 + WHERE,
+            "SELECT " + "CASE WHEN user_id > 1 THEN " * 200 + "1" + " END" * 200 + WHERE,
+            "SELECT * FROM " + "(SELECT * FROM " * 500 + "events" + ")" * 500 + WHERE,
+        ],
+        ids=["parentheses", "case", "subqueries"],
+    )
+    def test_warns_by_default(self, sql: str) -> None:
+        result = check(sql, CATALOG)
+        assert result.verdict is Verdict.WARN
+        (finding,) = result.findings
+        assert (finding.rule, finding.severity) == (UNANALYZABLE, Severity.WARN)
+        assert finding.message == "The SQL is nested too deeply to analyze."
+        assert result.tables == ()
+        assert result.estimate is None
+        assert result.tag == tag_for(sql)
+
+    def test_blocks_when_failing_closed(self) -> None:
+        sql = "SELECT " + "(" * 200 + "user_id" + ")" * 200 + self.WHERE
+        result = check(sql, CATALOG, policy=Policy(fail_mode="closed"))
+        assert result.verdict is Verdict.BLOCK
+        assert result.findings[0].severity is Severity.BLOCK
+
+    def test_too_deep_after_parsing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fail(*_args: object) -> None:
+            raise RecursionError
+
+        monkeypatch.setattr(check_module, "estimate", fail)
+        result = check("SELECT user_id" + self.WHERE, CATALOG)
+        assert [f.rule for f in result.findings] == [UNANALYZABLE]
+        assert result.estimate is None
+
+    def test_shallower_nesting_is_checked(self) -> None:
+        sql = "SELECT " + "(" * 20 + "usr_id" + ")" * 20 + self.WHERE
+        assert [f.rule for f in check(sql, CATALOG).findings] == [UNKNOWN_IDENTIFIER]
+
+
 class TestCatalogEdges:
     def test_unparsable_catalog_type_is_unanalyzable(self) -> None:
         table = Table("p", "d", "t", (Column("a", "INT64"), Column("b", "NOT A TYPE")))

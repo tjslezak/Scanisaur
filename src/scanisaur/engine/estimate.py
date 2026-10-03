@@ -28,7 +28,7 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar
+from typing import Literal, TypeVar, assert_never
 
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -108,6 +108,38 @@ _FLIPPED = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 #: FORMAT_DATE directives that map straight onto strftime.
 _FORMAT = re.compile(r"(?:%[YmdHF]|[^%])*")
 _V = TypeVar("_V", str, datetime)
+#: The units DATE_TRUNC and the like floor to.
+TruncUnit = Literal["HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR"]
+
+
+@dataclass(frozen=True, slots=True)
+class _Floor:
+    """A step that truncates to ``unit``, as DATE_TRUNC does."""
+
+    unit: TruncUnit
+    #: The day a WEEK starts, as ``datetime.weekday()`` numbers it: Monday is 0.
+    weekday: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Shift:
+    """A step that adds ``amount`` units, as DATE_ADD does."""
+
+    amount: int
+    unit: str
+
+
+_Step = _Floor | _Shift
+_DAY = _Floor("DAY")
+_TRUNC_UNITS: dict[str, _Floor] = {
+    "HOUR": _Floor("HOUR"),
+    "DAY": _DAY,
+    "MONTH": _Floor("MONTH"),
+    "QUARTER": _Floor("QUARTER"),
+    "YEAR": _Floor("YEAR"),
+    "ISOWEEK": _Floor("WEEK", _WEEKDAYS["MONDAY"]),
+    "WEEK": _Floor("WEEK", _WEEKDAYS["SUNDAY"]),
+}
 #: A UTC offset in hours only, such as the `-07` in `10:00:00-07`. It follows a time, so
 #: the day of a plain date such as `2026-09-30` isn't taken for one.
 _SHORT_OFFSET = re.compile(r"(\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2})$")
@@ -753,7 +785,7 @@ def _point_values(tree: exp.Expr, domain: _Domain) -> int | None:
     if compared is None:
         return None
     path = _path(compared[0], domain)
-    if path == () or (path == ("DAY",) and domain.granularity == "DAY"):
+    if path == () or (path == (_DAY,) and domain.granularity == "DAY"):
         return len(compared[1])
     return None
 
@@ -767,10 +799,10 @@ def _mentions(node: exp.Expr, names: frozenset[str]) -> bool:
     )
 
 
-def _path(node: exp.Expr, domain: _Domain) -> tuple[str, ...] | None:
+def _path(node: exp.Expr, domain: _Domain) -> tuple[_Step, ...] | None:
     """The steps between the partition column and ``node``, innermost first: ``()`` for the
-    column itself, ``("DAY",)`` for ``DATE(ts)``, ``("+1 DAY",)`` for ``DATE_ADD(d,
-    INTERVAL 1 DAY)``. None for anything else, such as a function measured to stop
+    column itself, ``(_Floor("DAY"),)`` for ``DATE(ts)``, ``(_Shift(1, "DAY"),)`` for
+    ``DATE_ADD(d, INTERVAL 1 DAY)``. None for anything else, such as a function measured to stop
     pruning, or one with a time zone. Every step keeps the order of values."""
     node = node.unnest()
     if isinstance(node, exp.Column):
@@ -779,24 +811,24 @@ def _path(node: exp.Expr, domain: _Domain) -> tuple[str, ...] | None:
     if node.args.get("zone") is not None:
         return None
     inner: exp.Expr | None
-    unit: str | None
+    step: _Step | None
     if (isinstance(node, exp.Date) and not node.expressions) or (
         isinstance(node, exp.Cast) and node.to.is_type(*_DATE_TYPES)
     ):
-        inner, unit = node.this, "DAY"
+        inner, step = node.this, _DAY
     elif isinstance(node, exp.Extract) and node.name.upper() == "DATE":
-        inner, unit = node.expression, "DAY"
+        inner, step = node.expression, _DAY
     elif isinstance(node, exp.Timestamp):
-        inner, unit = node.this, None  # TIMESTAMP(date) keeps pruning
+        inner, step = node.this, None  # TIMESTAMP(date) keeps pruning
     elif isinstance(node, _TRUNCS):
-        inner, unit = node.this, _unit(node.args.get("unit"))
-        if unit is None:
+        inner, step = node.this, _trunc(node.args.get("unit"))
+        if step is None:
             return None
     elif isinstance(node, _ADDS + _SUBS):
         shift = _interval(node)
         if shift is None:
             return None
-        inner, unit = node.this, f"{shift[0]:+d} {shift[1]}"
+        inner, step = node.this, _Shift(*shift)
     else:
         return None
     if not isinstance(inner, exp.Expr):
@@ -804,43 +836,38 @@ def _path(node: exp.Expr, domain: _Domain) -> tuple[str, ...] | None:
     path = _path(inner, domain)
     if path is None:
         return None
-    return path if unit is None else (*path, unit)
+    return path if step is None else (*path, step)
 
 
-def _apply(path: tuple[str, ...], value: datetime) -> datetime | None:
+def _apply(path: tuple[_Step, ...], value: datetime) -> datetime | None:
     result: datetime | None = value
     for step in path:
         if result is None:
             return None
-        if step[0] in "+-":
-            amount, unit = step.split()
-            result = _shift(result, int(amount), unit)
+        if isinstance(step, _Shift):
+            result = _shift(result, step.amount, step.unit)
         else:
             result = _floor(result, step)
     return result
 
 
-def _unit(node: object) -> str | None:
+def _trunc(node: object) -> _Floor | None:
+    """The step of DATE_TRUNC to ``node``'s unit; None for a unit this doesn't model."""
     if isinstance(node, exp.WeekStart):
-        day = node.name.upper()
-        return f"WEEK({day})" if day in _WEEKDAYS else None
-    if isinstance(node, exp.Expr):
-        name = node.name.upper()
-        if name == "ISOWEEK":
-            return "WEEK(MONDAY)"
-        if name == "WEEK":
-            return "WEEK(SUNDAY)"
-        if name in ("HOUR", "DAY", "MONTH", "QUARTER", "YEAR"):
-            return name
-    return None
+        weekday = _WEEKDAYS.get(node.name.upper())
+        return None if weekday is None else _Floor("WEEK", weekday)
+    return _TRUNC_UNITS.get(node.name.upper()) if isinstance(node, exp.Expr) else None
 
 
-def _floor(value: datetime, unit: str) -> datetime | None:
+def _floor(value: datetime, step: _Floor) -> datetime | None:
+    unit = step.unit
     if unit == "HOUR":
         return value.replace(minute=0, second=0, microsecond=0)
     day = value.replace(hour=0, minute=0, second=0, microsecond=0)
-    if unit.startswith("WEEK("):
-        back = (day.weekday() - _WEEKDAYS[unit[5:-1]]) % 7
+    if unit == "DAY":
+        return day
+    if unit == "WEEK":
+        back = (day.weekday() - step.weekday) % 7
         try:
             return day - timedelta(days=back)
         except OverflowError:
@@ -851,9 +878,7 @@ def _floor(value: datetime, unit: str) -> datetime | None:
         return day.replace(month=(day.month - 1) // 3 * 3 + 1, day=1)
     if unit == "YEAR":
         return day.replace(month=1, day=1)
-    if unit == "DAY":
-        return day
-    return None  # an unknown unit: can't estimate, rather than guess DAY
+    assert_never(unit)
 
 
 def _shift(value: datetime, amount: int, unit: str) -> datetime | None:
@@ -894,10 +919,10 @@ def _time_value(node: exp.Expr, now: datetime) -> datetime | None:
     if isinstance(node, exp.Cast) and node.to.is_type(*_TIME_TYPES):
         value = _time_value(node.this, now)
         if value is not None and node.to.is_type(*_DATE_TYPES):
-            value = _floor(value, "DAY")
+            value = _floor(value, _DAY)
         return value
     if isinstance(node, exp.CurrentDate) and node.this is None:
-        return _floor(now, "DAY")
+        return _floor(now, _DAY)
     if isinstance(node, exp.CurrentTimestamp | exp.CurrentDatetime) and node.this is None:
         return now
     if isinstance(node, _ADDS + _SUBS):
@@ -913,11 +938,11 @@ def _time_value(node: exp.Expr, now: datetime) -> datetime | None:
         return _shift(base, sign * amount, unit.name.upper())
     if isinstance(node, _TRUNCS):
         base = _time_value(node.this, now)
-        unit_name = _unit(node.args.get("unit"))
-        return None if base is None or unit_name is None else _floor(base, unit_name)
+        step = _trunc(node.args.get("unit"))
+        return None if base is None or step is None else _floor(base, step)
     if isinstance(node, exp.TsOrDsToDate) or (isinstance(node, exp.Date) and not node.expressions):
         base = _time_value(node.this, now)
-        return None if base is None else _floor(base, "DAY")
+        return None if base is None else _floor(base, _DAY)
     if isinstance(node, exp.Timestamp):
         return _time_value(node.this, now)
     if isinstance(node, exp.DateFromParts):
