@@ -61,7 +61,17 @@ LOG = Table(
     size_bytes=40_000_000,
     keys=(),
 )
-CATALOG = Catalog((USERS, ORDERS, ITEMS, EVENTS, LOG), "p", "d")
+#: Unique on (order_id, line) only.
+LINES = Table(
+    "p",
+    "d",
+    "lines",
+    (Column("order_id", "INT64"), Column("line", "INT64"), Column("price", "NUMERIC")),
+    row_count=180_000,
+    size_bytes=4_320_000,
+    keys=(("order_id", "line"),),
+)
+CATALOG = Catalog((USERS, ORDERS, ITEMS, EVENTS, LOG, LINES), "p", "d")
 
 
 def fan_out(sql: str) -> list[Finding]:
@@ -84,6 +94,17 @@ def fan_out(sql: str) -> list[Finding]:
         "FROM order_items GROUP BY k) i ON i.k = o.order_id",
         "SELECT SUM(o.amount) FROM orders o JOIN (SELECT order_id + 0 AS k "
         "FROM order_items GROUP BY order_id + 0) i ON i.k = o.order_id",
+        # A subquery that fixes part of a key keeps the rest of it, output or not.
+        "SELECT SUM(o.amount) FROM orders o JOIN (SELECT order_id, price FROM lines "
+        "WHERE line = 1) l ON l.order_id = o.order_id",
+        "SELECT SUM(o.amount) FROM orders o JOIN (SELECT order_id, line, price FROM lines "
+        "WHERE 1 = line) l ON l.order_id = o.order_id",
+        # A window function over the repeated side isn't an aggregate of it, nor is its
+        # IGNORE NULLS form.
+        "SELECT SUM(o.amount) OVER (PARTITION BY o.order_id) FROM orders o "
+        "JOIN order_items i ON i.order_id = o.order_id",
+        "SELECT SUM(o.amount) IGNORE NULLS OVER () FROM orders o "
+        "JOIN order_items i ON i.order_id = o.order_id",
         # A single row matches any row once.
         "SELECT SUM(o.amount) FROM orders o JOIN (SELECT MAX(order_id) AS m FROM order_items) i "
         "ON i.m = o.order_id",
@@ -231,3 +252,24 @@ def test_distinct_in_a_subquery_inside_the_aggregate() -> None:
         "JOIN order_items i ON i.order_id = o.order_id"
     )
     assert finding.message.startswith("`SUM(o.amount + (SELECT")
+
+
+def test_subquery_that_fixes_another_column_keeps_no_key() -> None:
+    # line = 1 fixes part of the key, but a filter on price doesn't.
+    (finding,) = fan_out(
+        "SELECT SUM(o.amount) FROM orders o JOIN (SELECT order_id, price FROM lines "
+        "WHERE price = 1) l ON l.order_id = o.order_id"
+    )
+    assert "`order_id` isn't a unique key of `l`" in finding.message
+
+
+@pytest.mark.parametrize(
+    "aggregate",
+    ["SUM(SUM(o.amount)) OVER ()", "RANK() OVER (ORDER BY SUM(o.amount))"],
+)
+def test_aggregate_inside_a_window(aggregate: str) -> None:
+    (finding,) = fan_out(
+        f"SELECT o.user_id, {aggregate} FROM orders o "
+        "JOIN order_items i ON i.order_id = o.order_id GROUP BY o.user_id"
+    )
+    assert finding.message.startswith("`SUM(o.amount)` counts each row of `o`")

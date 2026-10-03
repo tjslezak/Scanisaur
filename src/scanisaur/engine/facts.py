@@ -724,10 +724,13 @@ class _Walk:
             column = projection.unalias()
             if isinstance(column, exp.Column) and column.table == alias:
                 renamed.setdefault(column.name.lower(), projection.alias_or_name.lower())
+        # A column WHERE holds to one value needn't be output: `(order_id, line)` with
+        # `line = 1` leaves `order_id` unique.
+        fixed = _fixed_columns(select, alias)
         return tuple(
-            frozenset(renamed[name] for name in key)
+            frozenset(renamed[name] for name in key - fixed)
             for key in inner
-            if all(name in renamed for name in key)
+            if all(name in renamed for name in key - fixed)
         )
 
     def _sources(self, scope: Scope) -> _Sources:
@@ -837,12 +840,13 @@ _REPEATED = {exp.Sum: "SUM", exp.Avg: "AVG", exp.Count: "COUNT", exp.CountIf: "C
 
 def _aggregations(select: exp.Select, members: set[str]) -> Iterator[Aggregation]:
     """SUM, AVG, COUNT and COUNTIF of one source's columns in the SELECT list and HAVING, without
-    DISTINCT, outside window functions. ``COUNT(*)`` counts the join's rows, as intended."""
+    DISTINCT, that aren't themselves the function of an OVER clause. ``COUNT(*)`` counts
+    the join's rows, as intended."""
     having = select.args.get("having")
     for node in [*select.expressions, *([having] if having is not None else [])]:
         for aggregate in find_all_in_scope(node, exp.AggFunc):
             function = _REPEATED.get(type(aggregate))
-            if function is None or aggregate.find_ancestor(exp.Window) is not None:
+            if function is None or _is_window_function(aggregate):
                 continue
             if isinstance(aggregate.this, exp.Distinct | exp.Star):
                 continue
@@ -854,6 +858,28 @@ def _aggregations(select: exp.Select, members: set[str]) -> Iterator[Aggregation
                     source=owners.pop(),
                     position=_written_at(aggregate),
                 )
+
+
+def _is_window_function(aggregate: exp.AggFunc) -> bool:
+    """True for the function of an OVER clause, as `SUM(x) OVER ()`, which doesn't collapse
+    rows. An aggregate inside one, as `SUM(SUM(x)) OVER ()` or in its ORDER BY, does."""
+    node: exp.Expr = aggregate
+    while isinstance(node.parent, exp.IgnoreNulls | exp.RespectNulls):
+        node = node.parent
+    return isinstance(node.parent, exp.Window) and node.arg_key == "this"
+
+
+def _fixed_columns(select: exp.Select, alias: str) -> frozenset[str]:
+    """The columns of ``alias`` that the conditions compare with one value."""
+    fixed: set[str] = set()
+    for condition in _join_conditions(select):
+        if not isinstance(condition, exp.EQ):
+            continue
+        for side, other in ((condition.left, condition.right), (condition.right, condition.left)):
+            column = _bare_column(side)
+            if column is not None and column.table == alias and _is_constant(other):
+                fixed.add(column.name.lower())
+    return frozenset(fixed)
 
 
 def _join_conditions(select: exp.Select) -> list[exp.Expr]:
