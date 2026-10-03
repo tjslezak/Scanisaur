@@ -1,8 +1,19 @@
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from scanisaur.config import ConfigError, load_policy, parse_size
+from scanisaur.config import (
+    BigQueryWarehouse,
+    CacheSettings,
+    Config,
+    ConfigError,
+    DuckDBWarehouse,
+    load_config,
+    load_policy,
+    parse_duration,
+    parse_size,
+)
 from scanisaur.engine.check import DEFAULT_POLICY, Policy
 from scanisaur.errors import ScanisaurError
 
@@ -152,3 +163,79 @@ def test_empty_section_is_the_default(tmp_path: Path, text: str) -> None:
 
 def test_exponent_from_yaml(tmp_path: Path) -> None:
     assert _load(tmp_path, "policy: {warn_bytes: 1e11}").warn_bytes == 10**11
+
+
+def _config(tmp_path: Path, text: str) -> Config:
+    path = tmp_path / "scanisaur.yaml"
+    path.write_text(text, encoding="utf-8")
+    return load_config(path)
+
+
+def test_plan_example_warehouse(tmp_path: Path) -> None:
+    config = _config(tmp_path, PLAN_EXAMPLE)
+    assert config.warehouse == BigQueryWarehouse(
+        type="bigquery",
+        project="acme-analytics",
+        location="US",
+        include_datasets=("analytics", "marts"),
+    )
+    assert config.cache == CacheSettings(ttl=timedelta(hours=6))
+
+
+def test_no_warehouse(tmp_path: Path) -> None:
+    assert _config(tmp_path, "") == Config()
+
+
+def test_duckdb_path_is_relative_to_the_file(tmp_path: Path) -> None:
+    config = _config(tmp_path, "warehouse: {type: duckdb, path: demo.duckdb}")
+    assert config.warehouse == DuckDBWarehouse(type="duckdb", path=tmp_path / "demo.duckdb")
+
+
+def test_cache_settings(tmp_path: Path) -> None:
+    config = _config(tmp_path, "cache: {ttl: 30m, path: /tmp/c.sqlite}")
+    assert config.cache == CacheSettings(ttl=timedelta(minutes=30), path=Path("/tmp/c.sqlite"))
+
+
+def test_keys(tmp_path: Path) -> None:
+    config = _config(tmp_path, "keys: {p.d.orders: [[order_id], [shop, number]]}")
+    assert config.keys == {"p.d.orders": (("order_id",), ("shop", "number"))}
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("warehouse: {type: snowflake}", "snowflake"),
+        ("warehouse: {type: bigquery}", "project"),
+        ("warehouse: {type: duckdb, path: x.duckdb, project: p}", "project"),
+        ("warehouse: {type: bigquery, project: p, datasets: [a]}", "datasets"),
+        ("cache: {ttl: soon}", "expected a duration"),
+        ("keys: {orders: [[id]]}", "must be project.dataset.table"),
+        ("keys: {p.d.orders: [[]]}", "at least one column"),
+    ],
+)
+def test_bad_warehouse_cache_or_keys(tmp_path: Path, text: str, reason: str) -> None:
+    with pytest.raises(ConfigError, match=r"scanisaur\.yaml") as error:
+        _config(tmp_path, text)
+    assert reason in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "duration"),
+    [
+        ("6h", timedelta(hours=6)),
+        ("30m", timedelta(minutes=30)),
+        ("1d", timedelta(days=1)),
+        ("90 s", timedelta(seconds=90)),
+        ("1.5H", timedelta(minutes=90)),
+        ("45", timedelta(seconds=45)),
+        (3600, timedelta(hours=1)),
+    ],
+)
+def test_parse_duration(value: object, duration: timedelta) -> None:
+    assert parse_duration(value) == duration
+
+
+@pytest.mark.parametrize("value", ["", "h", "6 weeks", -1, True, [1]])
+def test_parse_duration_rejects(value: object) -> None:
+    with pytest.raises(ValueError, match="expected a duration"):
+        parse_duration(value)
