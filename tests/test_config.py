@@ -135,3 +135,13 @@ def test_parse_size(value: object, size: int | None) -> None:
 def test_parse_size_rejects(value: object) -> None:
     with pytest.raises(ValueError, match="expected a size"):
         parse_size(value)
+
+
+def test_block_bytes_alone_under_the_default_warn(tmp_path: Path) -> None:
+    policy = _load(tmp_path, "policy: {block_bytes: 50GB}")
+    assert (policy.warn_bytes, policy.block_bytes) == (100 * 2**30, 50 * 10**9)
+
+
+@pytest.mark.parametrize("text", ["policy:\n  # read_only: true\n", "pricing:\n"])
+def test_empty_section_is_the_default(tmp_path: Path, text: str) -> None:
+    assert _load(tmp_path, text) == DEFAULT_POLICY

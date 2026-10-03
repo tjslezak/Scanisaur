@@ -121,6 +121,12 @@ class _ConfigSpec(_Spec):
     planner: dict[str, Any] | None = None
     cache: dict[str, Any] | None = None
 
+    @field_validator("pricing", "policy", mode="before")
+    @classmethod
+    def _empty_section(cls, value: object) -> object:
+        # A section whose keys are all commented out reads as null.
+        return {} if value is None else value
+
 
 def load_policy(path: str | os.PathLike[str]) -> Policy:
     """Read the policy from a ``scanisaur.yaml``, raising ConfigError with the reason."""
@@ -134,8 +140,11 @@ def load_policy(path: str | os.PathLike[str]) -> Policy:
     except ValidationError as error:
         raise ConfigError(f"{path}: {error}") from error
     policy, pricing = spec.policy, spec.pricing
+    # Only a warn_bytes the file sets: the default may be over a lower block_bytes, where
+    # it does nothing, since the block fires first.
     if (
-        policy.warn_bytes is not None
+        "warn_bytes" in policy.model_fields_set
+        and policy.warn_bytes is not None
         and policy.block_bytes is not None
         and policy.warn_bytes > policy.block_bytes
     ):
