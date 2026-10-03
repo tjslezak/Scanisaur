@@ -18,7 +18,7 @@ policy:
     SCN005: off
 ```
 
-Every key is optional. `profile` and `planner` are accepted, so a whole project file loads, but nothing reads them yet. `warehouse`, `cache` and `keys` are described under [Warehouse, cache and keys](#warehouse-cache-and-keys). Any other key, an unknown rule ID, or a `warn_bytes` set larger than `block_bytes` is an error, and `scanisaur check` exits with 2.
+Every key is optional. `profile` and `planner` are accepted, so a whole project file loads, but nothing reads them yet. `warehouse`, `cache` and `keys` are described under [Warehouse, cache and keys](#warehouse-cache-and-keys), and `log` in [docs/decision-log.md](decision-log.md). Any other key, an unknown rule ID, or a `warn_bytes` set larger than `block_bytes` is an error, and `scanisaur check` exits with 2.
 
 ## Warehouse, cache and keys
 

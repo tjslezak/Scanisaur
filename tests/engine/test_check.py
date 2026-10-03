@@ -2,11 +2,20 @@ import re
 from pathlib import Path
 
 import pytest
+from sqlglot import exp
 
 from scanisaur.catalog import Catalog, Column, Partitioning, Table
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.engine import check as check_module
-from scanisaur.engine.check import Policy, check, fingerprint, new_check_id, tag_for
+from scanisaur.engine.check import (
+    Policy,
+    check,
+    fingerprint,
+    new_check_id,
+    shape,
+    shape_fingerprint,
+    tag_for,
+)
 from scanisaur.engine.resolve import ResolveError
 from scanisaur.engine.result import CheckResult, Finding, Severity, Verdict
 from scanisaur.engine.rules import UNANALYZABLE, UNKNOWN_IDENTIFIER, WRITE_STATEMENT
@@ -318,3 +327,43 @@ class TestUnnest:
         sql = "SELECT q.key FROM events e, UNNEST(e.params) AS p"
         (finding,) = _unknown_names(check(sql, CATALOG))
         assert finding.fix == "Use one of: `e`, `p`."
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        (
+            "/* scanisaur:q_x */ SELECT a FROM t WHERE b = 'x@y.com' AND c IN (1, 2) -- hi",
+            "SELECT a FROM t WHERE b = ? AND c IN (?)",
+        ),
+        ("SELECT a FROM t WHERE c IN (1, d)", "SELECT a FROM t WHERE c IN (?, d)"),
+        ("SELECT 1; SELECT 'a'", "SELECT ?; SELECT ?"),
+        (
+            "SELECT a FROM t WHERE e = r'a@x.com' AND b = b'xy' AND h = 0xFF AND c IN (r'q')",
+            "SELECT a FROM t WHERE e = ? AND b = ? AND h = ? AND c IN (?)",
+        ),
+        # SQL that doesn't parse is shaped by pattern.
+        (
+            "SELEC a FROM t WHERE b = 'it\\'s -- x' and c=1.5e3 # note",
+            "SELEC a FROM t WHERE b = ? and c=?",
+        ),
+    ],
+)
+def test_shape(sql: str, expected: str) -> None:
+    assert shape(sql) == expected
+
+
+def test_shape_fingerprint() -> None:
+    same = (
+        shape_fingerprint("SELECT a FROM t WHERE b = 1"),
+        shape_fingerprint("SELECT a FROM t\nWHERE b = 2"),
+    )
+    assert same[0] == same[1]
+    assert re.fullmatch(r"s_[0-9a-z]{20}", same[0])
+    assert shape_fingerprint("SELECT b FROM t WHERE b = 1") != same[0]
+
+
+def test_shape_never_keeps_a_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A literal kind the type list misses falls back to the pattern shape.
+    monkeypatch.setattr("scanisaur.engine.check._LITERALS", (exp.Literal,))
+    assert shape("SELECT a FROM t WHERE e = r'a@x.com'") == "SELECT a FROM t WHERE e = r?"
