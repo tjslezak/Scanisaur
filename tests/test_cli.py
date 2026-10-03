@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlglot import exp
 from typer.testing import CliRunner, Result
 
 from scanisaur import __version__, cli
@@ -14,7 +15,9 @@ from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.catalog.source import Snapshot
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
 from scanisaur.config import BigQueryWarehouse, Config, DuckDBWarehouse, load_config
+from scanisaur.engine import check as check_module
 from scanisaur.engine.check import DEFAULT_POLICY
+from scanisaur.engine.parse import parse
 from scanisaur.engine.result import Estimate
 from scanisaur.tools import describe_estimate
 
@@ -396,6 +399,26 @@ class TestDecisionLog:
         result = run_check("--config", str(config), sql="SELECT 1")
         assert result.exit_code == EXIT_OK
         assert "warning: decision log not written" in result.stderr
+
+
+@pytest.mark.parametrize("logging_enabled", [True, False])
+def test_check_parses_once_with_or_without_logging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, logging_enabled: bool
+) -> None:
+    config = tmp_path / "scanisaur.yaml"
+    config.write_text(f"log: {{enabled: {str(logging_enabled).lower()}}}\n", encoding="utf-8")
+    original = parse
+    calls: list[str] = []
+
+    def counted(sql: str, dialect: str) -> list[exp.Expr]:
+        calls.append(sql)
+        return original(sql, dialect)
+
+    monkeypatch.setattr(check_module, "parse", counted)
+    sql = "SELECT user_id FROM events WHERE event_date = '2026-09-01'"
+    result = run_check("--config", str(config), sql=sql)
+    assert result.exit_code == EXIT_OK
+    assert calls == [sql]
 
 
 class _History:

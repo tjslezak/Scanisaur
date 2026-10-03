@@ -19,7 +19,7 @@ from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config, load_config_text
-from scanisaur.engine.check import check
+from scanisaur.engine.check import check, check_with_shape
 from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Verdict
 from scanisaur.errors import ScanisaurError
@@ -143,20 +143,33 @@ def check_command(
         policy = dataclasses.replace(policy, fail_mode="closed")
     if capacity_pricing:
         policy = dataclasses.replace(policy, price_per_tib=None)
-    result = check(sql, loaded, policy=policy)
-    _log_check(settings, result, sql)
+    shape_id = None
+    if settings.log.enabled:
+        result, shape_id = check_with_shape(sql, loaded, policy=policy)
+    else:
+        result = check(sql, loaded, policy=policy)
+    _log_check(settings, result, sql, shape_id=shape_id)
     typer.echo(result.model_dump_json(indent=2) if as_json else _format(result))
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
 
 
-def _log_check(settings: Config, result: CheckResult, sql: str) -> None:
+def _log_check(
+    settings: Config, result: CheckResult, sql: str, *, shape_id: str | None = None
+) -> None:
     """Add the check to the decision log; a log that can't be written only warns."""
     if not settings.log.enabled:
         return
     warehouse = settings.warehouse.name if settings.warehouse else None
-    entry = decision(result, sql, source="cli", warehouse=warehouse, raw_sql=settings.log.raw_sql)
+    entry = decision(
+        result,
+        sql,
+        source="cli",
+        warehouse=warehouse,
+        raw_sql=settings.log.raw_sql,
+        shape_id=shape_id,
+    )
     try:
         append(log_directory(settings.log), entry)
     except OSError as error:
