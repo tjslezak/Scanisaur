@@ -617,59 +617,44 @@ class _Walk:
         written = dict(positions)
         for alias in derived:
             written[alias] = _written_at(scope.selected_sources[alias][0])
-        pairs: dict[tuple[str, str], tuple[set[str], set[str], exp.Expr]] = {}
-        fixed: dict[str, set[str]] = {alias: set() for alias in members}
-        for condition in _join_conditions(select):
-            if not isinstance(condition, exp.EQ):
-                continue
-            left, right = _bare_column(condition.left), _bare_column(condition.right)
-            if left is not None and right is not None:
-                if left.table in members and right.table in members and left.table != right.table:
-                    a, b = sorted((left, right), key=lambda c: _sort_key(written[c.table]))
-                    found = pairs.setdefault((a.table, b.table), (set(), set(), condition))
-                    found[0].add(a.name.lower())
-                    found[1].add(b.name.lower())
-                continue
-            for column, other in ((left, condition.right), (right, condition.left)):
-                if column is not None and column.table in members and _is_constant(other):
-                    fixed[column.table].add(column.name.lower())
+        pairs, fixed = _equalities(select, members, written)
         if not pairs:
             return None
-        sources = []
-        for alias in members:
-            table = tables.get(alias)
-            if table is not None:
-                columns = frozenset(c.name.lower() for c in table.columns)
-                keys = _lowered(table.keys)
-            else:
-                columns = frozenset(self._output_names(derived[alias].expression))
-                keys = self._source_keys(derived[alias])
-            sources.append(
-                KeyedSource(
-                    alias=alias,
-                    table=table.name if table is not None else None,
-                    columns=columns,
-                    keys=keys,
-                    fixed=frozenset(fixed[alias]),
-                )
-            )
         order = list(scope.selected_sources)
-        sources.sort(key=lambda source: order.index(source.alias))
-        matches = tuple(
-            KeyMatch(
-                left=a,
-                right=b,
-                left_columns=frozenset(a_columns),
-                right_columns=frozenset(b_columns),
-                condition=_shown(condition),
-                position=written[b],
-            )
-            for (a, b), (a_columns, b_columns, condition) in pairs.items()
+        sources = sorted(
+            (self._keyed_source(alias, tables, derived, fixed[alias]) for alias in members),
+            key=lambda source: order.index(source.alias),
         )
         return KeyedJoin(
             sources=tuple(sources),
-            matches=matches,
+            matches=_key_matches(pairs, written),
             aggregations=tuple(_aggregations(select, members)),
+        )
+
+    def _keyed_source(
+        self,
+        alias: str,
+        tables: Mapping[str, Table],
+        derived: Mapping[str, Scope],
+        fixed: set[str],
+    ) -> KeyedSource:
+        """A catalog table's columns and declared keys, or a CTE or subquery's output
+        columns and the keys its query implies."""
+        table = tables.get(alias)
+        if table is None:
+            return KeyedSource(
+                alias=alias,
+                table=None,
+                columns=frozenset(self._output_names(derived[alias].expression)),
+                keys=self._source_keys(derived[alias]),
+                fixed=frozenset(fixed),
+            )
+        return KeyedSource(
+            alias=alias,
+            table=table.name,
+            columns=frozenset(c.name.lower() for c in table.columns),
+            keys=_lowered(table.keys),
+            fixed=frozenset(fixed),
         )
 
     def _source_keys(self, scope: Scope) -> tuple[frozenset[str], ...] | None:
@@ -694,19 +679,14 @@ class _Walk:
             return (frozenset(n.lower() for n in select.named_selects),)
         group = select.args.get("group")
         if group is not None:
-            if not group.expressions:
-                return None  # GROUP BY ALL
-            outputs: dict[exp.Expr, str] = {}
-            for projection in select.expressions:
-                outputs.setdefault(projection.unalias(), projection.alias_or_name.lower())
-            key: set[str] = set()
-            for expression in group.expressions:
-                if expression not in outputs:
-                    # Left out of the output, rows that differ only in it repeat; ROLLUP,
-                    # CUBE and GROUPING SETS add rows.
-                    return None
-                key.add(outputs[expression])
-            return (frozenset(key),)
+            return _group_keys(select, group)
+        return self._passed_through_keys(scope, select)
+
+    def _passed_through_keys(
+        self, scope: Scope, select: exp.Select
+    ) -> tuple[frozenset[str], ...] | None:
+        """The keys of the one table or CTE a SELECT reads, under its output names, when
+        the SELECT neither joins nor groups: each of its rows is one row of that source."""
         if len(scope.selected_sources) != 1 or select.args.get("joins"):
             return None
         ((alias, (_node, source)),) = scope.selected_sources.items()
@@ -719,19 +699,7 @@ class _Walk:
             return None
         if inner is None:
             return None
-        renamed: dict[str, str] = {}
-        for projection in select.expressions:
-            column = projection.unalias()
-            if isinstance(column, exp.Column) and column.table == alias:
-                renamed.setdefault(column.name.lower(), projection.alias_or_name.lower())
-        # A column WHERE holds to one value needn't be output: `(order_id, line)` with
-        # `line = 1` leaves `order_id` unique.
-        fixed = _fixed_columns(select, alias)
-        return tuple(
-            frozenset(renamed[name] for name in key - fixed)
-            for key in inner
-            if all(name in renamed for name in key - fixed)
-        )
+        return _renamed_keys(select, alias, inner)
 
     def _sources(self, scope: Scope) -> _Sources:
         """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
@@ -818,6 +786,88 @@ def _product(
         limited=limited,
         flattened=frozenset(owner for found in owners.values() for owner in found),
         limit=_early_limit(select),
+    )
+
+
+_Pairs = dict[tuple[str, str], tuple[set[str], set[str], exp.Expr]]
+
+
+def _equalities(
+    select: exp.Select,
+    members: set[str],
+    written: Mapping[str, tuple[int | None, int | None]],
+) -> tuple[_Pairs, dict[str, set[str]]]:
+    """The columns that equalities in WHERE and ON match between two sources, by the pair
+    of sources in written order with the first such equality, and the columns of each
+    source compared with one value."""
+    pairs: _Pairs = {}
+    fixed: dict[str, set[str]] = {alias: set() for alias in members}
+    for condition in _join_conditions(select):
+        if not isinstance(condition, exp.EQ):
+            continue
+        left, right = _bare_column(condition.left), _bare_column(condition.right)
+        if left is not None and right is not None:
+            if left.table in members and right.table in members and left.table != right.table:
+                a, b = sorted((left, right), key=lambda c: _sort_key(written[c.table]))
+                found = pairs.setdefault((a.table, b.table), (set(), set(), condition))
+                found[0].add(a.name.lower())
+                found[1].add(b.name.lower())
+            continue
+        for column, other in ((left, condition.right), (right, condition.left)):
+            if column is not None and column.table in members and _is_constant(other):
+                fixed[column.table].add(column.name.lower())
+    return pairs, fixed
+
+
+def _key_matches(
+    pairs: _Pairs, written: Mapping[str, tuple[int | None, int | None]]
+) -> tuple[KeyMatch, ...]:
+    return tuple(
+        KeyMatch(
+            left=a,
+            right=b,
+            left_columns=frozenset(a_columns),
+            right_columns=frozenset(b_columns),
+            condition=_shown(condition),
+            position=written[b],
+        )
+        for (a, b), (a_columns, b_columns, condition) in pairs.items()
+    )
+
+
+def _group_keys(select: exp.Select, group: exp.Group) -> tuple[frozenset[str], ...] | None:
+    """The GROUP BY columns under their output names, when every one is output."""
+    if not group.expressions:
+        return None  # GROUP BY ALL
+    outputs: dict[exp.Expr, str] = {}
+    for projection in select.expressions:
+        outputs.setdefault(projection.unalias(), projection.alias_or_name.lower())
+    key: set[str] = set()
+    for expression in group.expressions:
+        if expression not in outputs:
+            # Left out of the output, rows that differ only in it repeat; ROLLUP,
+            # CUBE and GROUPING SETS add rows.
+            return None
+        key.add(outputs[expression])
+    return (frozenset(key),)
+
+
+def _renamed_keys(
+    select: exp.Select, alias: str, inner: tuple[frozenset[str], ...]
+) -> tuple[frozenset[str], ...]:
+    """The keys of the source ``alias`` that the SELECT outputs, under their output names."""
+    renamed: dict[str, str] = {}
+    for projection in select.expressions:
+        column = projection.unalias()
+        if isinstance(column, exp.Column) and column.table == alias:
+            renamed.setdefault(column.name.lower(), projection.alias_or_name.lower())
+    # A column WHERE holds to one value needn't be output: `(order_id, line)` with
+    # `line = 1` leaves `order_id` unique.
+    fixed = _fixed_columns(select, alias)
+    return tuple(
+        frozenset(renamed[name] for name in key - fixed)
+        for key in inner
+        if all(name in renamed for name in key - fixed)
     )
 
 
