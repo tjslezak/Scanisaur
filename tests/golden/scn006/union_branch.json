@@ -17,10 +17,10 @@
     "proj.web.store_sales"
   ],
   "estimate": {
-    "bytes_low": 441450496,
-    "bytes_high": 6111100928,
+    "bytes_low": 451936256,
+    "bytes_high": 6121586688,
     "confidence": "low",
-    "usd_low": 0.0025,
-    "usd_high": 0.0347
+    "usd_low": 0.0026,
+    "usd_high": 0.0348
   }
 }
