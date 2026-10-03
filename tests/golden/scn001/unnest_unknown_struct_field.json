@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "`p.vaule` does not exist: `p` has no field `vaule`.",
+      "fix": "Did you mean `p.value`?",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": null
+}

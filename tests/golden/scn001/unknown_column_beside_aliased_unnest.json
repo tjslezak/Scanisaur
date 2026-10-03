@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN001",
+      "severity": "block",
+      "message": "Column `event_nme` does not exist in `proj.analytics.events` or `p`.",
+      "fix": "Did you mean `event_name`?",
+      "line": 2,
+      "column": 8
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": null
+}
