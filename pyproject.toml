@@ -26,6 +26,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
+    "mcp>=2.3,<2.4",
     "platformdirs>=4.12.2",
     "pydantic>=2.10",
     "pyyaml>=6.0",
@@ -38,7 +39,7 @@ Homepage = "https://github.com/tjslezak/Scanisaur"
 Issues = "https://github.com/tjslezak/Scanisaur/issues"
 
 [project.scripts]
-scanisaur = "scanisaur.cli:app"
+scanisaur = "scanisaur.__main__:main"
 
 [project.optional-dependencies]
 duckdb = [

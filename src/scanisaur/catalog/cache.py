@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
@@ -52,6 +53,9 @@ CREATE VIRTUAL TABLE search USING fts5(
     snapshot_id UNINDEXED, tbl UNINDEXED, col UNINDEXED, words
 )
 """
+
+#: Tries at switching a new cache file to WAL, 10 ms apart.
+_WAL_ATTEMPTS = 50
 
 
 class CacheError(ScanisaurError):
@@ -212,13 +216,26 @@ class MetadataCache:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(self.path)) as db:
-                db.execute("PRAGMA journal_mode = WAL")
+                _use_wal(db)
                 db.execute("PRAGMA foreign_keys = ON")
                 if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                     _rebuild(db)
                 yield db
         except sqlite3.Error as error:
             raise CacheError(f"{self.path}: {error}") from error
+
+
+def _use_wal(db: sqlite3.Connection) -> None:
+    """Switch to WAL. While another connection creates the file, SQLite can answer this
+    pragma with "database is locked" at once instead of waiting, so retry briefly."""
+    for attempt in range(_WAL_ATTEMPTS):
+        try:
+            db.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error) or attempt == _WAL_ATTEMPTS - 1:
+                raise
+            time.sleep(0.01)
 
 
 def _rebuild(db: sqlite3.Connection, *, force: bool = False) -> None:

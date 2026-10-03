@@ -70,6 +70,10 @@ class CheckResult(BaseModel):
     tables: tuple[str, ...] = ()
     #: None when the query couldn't be analyzed, or a table it reads has no known size.
     estimate: Estimate | None = None
+    #: The catalog snapshot the check ran against, when it came from a long-running server.
+    snapshot_id: str | None = None
+    #: Findings left out of ``findings`` to keep the response short; the most severe stay.
+    omitted_findings: int = 0
 
 
 def verdict_for(findings: tuple[Finding, ...] | list[Finding]) -> Verdict:
