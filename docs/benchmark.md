@@ -83,11 +83,11 @@ BigQuery rejected 3 queries. Scanisaur gives 3 of them no estimate, as intended.
 | `ga4-struct-field` | 10.5 MB | 11.5 MB (medium) | 1.10 | none | none |
 | `ga4-suffix-not-equal` | 56.6 MB | 39.8 MB (medium) | 0.70 | SCN003 | SCN003 |
 | `ga4-suffix-from-format-date` | 0 B | 0 B (high) | 1.00 | none | none |
-| `thelook-order-totals` | 10.5 MB to 21 MB | 21 MB (low) | 1.00 | none | none |
+| `thelook-order-totals` | 21 MB | 21 MB (low) | 1.00 | none | none |
 | `thelook-users-preview` | 19.9 MB | 19.9 MB (medium) | 1.00 | none | none |
 | `thelook-events-preview` | 386.9 MB | 386.9 MB (medium) | 1.00 | none | none |
 | `thelook-monthly-average` | 10.5 MB | 10.5 MB (low) | 1.00 | none | none |
-| `thelook-orders-by-country` | 10.5 MB to 21 MB | 21 MB (low) | 1.00 | none | none |
+| `thelook-orders-by-country` | 21 MB | 21 MB (low) | 1.00 | none | none |
 | `mix-trending-articles` | 1.5 GB | 54.5 MB to 8.1 GB (medium) | 5.33 ** | none | none |
 | `mix-trends-unfiltered` | 2.6 GB | 1 GB to 9.1 GB (medium) | 3.44 ** | SCN003 | SCN003 |
 | `mix-pageviews-unfiltered` | rejected: can be used for partition elimination | none | - | SCN003 | SCN003 |

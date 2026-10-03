@@ -273,13 +273,19 @@ class TestColumns:
         users = Table("p", "d", "users", (Column("id", "INT64"),), row_count=10, size_bytes=80)
         assert billed("SELECT COUNT(*) FROM users, trends", TRENDS, users) == (0, 0)
 
-    def test_joined_table_pruned_to_nothing_stays_free(self) -> None:
+    def test_joined_table_pruned_to_nothing_bills_the_minimum(self) -> None:
+        # Measured in #26: `orders` with Trends pruned to no partitions billed 20 MiB.
         users = Table("p", "d", "users", (Column("id", "INT64"),), row_count=10, size_bytes=80)
         sql = (
             "SELECT COUNT(*) FROM users AS u, trends AS t "
             "WHERE u.id > 0 AND t.refresh_date = '2000-01-01'"
         )
-        assert billed(sql, TRENDS, users) == (MIN_BILLED_BYTES, MIN_BILLED_BYTES)
+        assert billed(sql, TRENDS, users) == (2 * MIN_BILLED_BYTES, 2 * MIN_BILLED_BYTES)
+
+    def test_self_join_reference_that_reads_nothing_adds_nothing(self) -> None:
+        # Measured in #26: `orders AS a, orders AS b` reading only `a.status` billed 10 MiB.
+        sql = f"SELECT COUNT(*) FROM trends AS a, trends AS b WHERE a.{ONE_DAY}"
+        assert billed(sql) == (COLUMN, COLUMN)  # a's refresh_date, and no minimum for b
 
     def test_unknown_size_gives_no_estimate(self) -> None:
         table = Table("p", "d", "t", (Column("a", "INT64"),))

@@ -330,14 +330,15 @@ class Outcome:
 
 
 def billed(processed: int, tables: int = 1) -> tuple[int, int]:
-    """Bytes processed as BigQuery bills them, as (low, high): each table read is rounded
-    up to a MiB and billed at least 10 MiB (measured), and a table that reads nothing is
-    billed nothing. A dry run gives only the total, so with several tables the bill is a
-    range: from every byte in one table to every table read."""
+    """Bytes processed as BigQuery bills them, as (low, high): once a query processes
+    anything, each table it references is rounded up to a MiB and billed at least 10 MiB,
+    even one it reads nothing of (measured in #26). A dry run gives only the total, so with
+    several tables the bill is a range: from the bytes spread to fill each table's minimum,
+    to every byte in one table."""
     if processed == 0:
         return 0, 0
-    low = billed_bytes(processed)
-    return low, low + (tables - 1) * MIN_BILLED_BYTES
+    high = billed_bytes(processed) + (tables - 1) * MIN_BILLED_BYTES
+    return min(max(billed_bytes(processed), tables * MIN_BILLED_BYTES), high), high
 
 
 def outcomes(queries: list[Query], catalog: Catalog, runs: DryRuns) -> list[Outcome]:

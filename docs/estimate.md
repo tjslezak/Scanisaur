@@ -42,7 +42,7 @@ So for each table, the estimate goes partition by partition. For each one, it ta
 - **Shards:** every condition on `_TABLE_SUFFIX` is evaluated against the shard names, `!=`, `NOT IN` and `NOT LIKE` included, because BigQuery checks constant filters against them. In a narrower wildcard such as `events_2026*`, `_TABLE_SUFFIX` is what follows `events_2026`.
 - **Newer partitions:** partitions written after the catalog was read aren't listed. When a filter can pick dates after the newest listed partition, such as `day = CURRENT_DATE()`, each of those days counts in the high end at the size of the newest partition, and the confidence is at most medium.
 - **Clustering and sampling:** a filter on a cluster column may skip blocks that metadata can't see, and `TABLESAMPLE` reads only the blocks it picks. The high end stays at the partitions' size and the low end drops to the minimum.
-- **Rounding and minimum:** each table's bytes are rounded up to a whole MiB, with at least 10 MiB, as BigQuery bills them. A table the query reads no columns of adds nothing when it is the only table, as in `SELECT COUNT(*)`, and the 10 MiB minimum once another table bills anything. A query with an outer `LIMIT 0` adds nothing.
+- **Rounding and minimum:** each table's bytes are rounded up to a whole MiB, with at least 10 MiB, as BigQuery bills them. Once the query bills anything, every table it references bills at least 10 MiB, even one it reads no columns of or prunes to no partitions. A self-join is one table. A query that bills nothing stays at 0: a `SELECT COUNT(*)` on one table, a table pruned to nothing on its own, or an outer `LIMIT 0`.
 
 ## What partition filters are evaluated
 
@@ -68,13 +68,13 @@ A query's confidence is the lowest of its tables'.
 
 ## Measured assumptions
 
-Measured on 2026-10-02 with dry runs, and four real queries that billed at most 20 MiB:
+Measured on 2026-10-02 with dry runs and four real queries, and on 2026-10-03 with three more ([#26](https://github.com/tjslezak/Scanisaur/issues/26)), each billed at most 20 MiB:
 
 | Assumption | Result |
 | --- | --- |
-| A query that prunes a table to nothing is billed nothing, not the minimum | **Holds.** Trends filtered to a date with no partition processed and billed 0 bytes. |
+| A query that prunes a table to nothing is billed nothing, not the minimum | **Holds alone, not in a join.** Trends filtered to a date with no partition processed and billed 0 bytes. Joined with `orders`, which read `status`, the same filter billed 20 MiB: 10 MiB for each table. |
 | Each table read is billed at least 10 MiB | **Holds.** A query that processed 169 bytes billed 10,485,760. A join of two tables that processed 3.9 MB billed 20 MiB. Seven shards of a wildcard table that processed 3.2 MB billed 10 MiB: a wildcard family counts as one table. |
-| A table the query reads no columns of is billed nothing | **Holds alone, not in a join** ([#26](https://github.com/tjslezak/Scanisaur/issues/26)). Trends' `COUNT(*)` billed 0 bytes. A cross join of `users` and `orders` that read only `orders.status` processed 1.3 MB and billed 20 MiB: 10 MiB for each table. |
+| A table the query reads no columns of is billed nothing | **Holds alone, not in a join.** Trends' `COUNT(*)` billed 0 bytes. A cross join of `users` and `orders` that read only `orders.status` processed 1.3 MB and billed 20 MiB: 10 MiB for each table. A self-join of `orders` that read only one side's `status` billed 10 MiB: it is one table. |
 | `_TABLE_SUFFIX != '…'` and `NOT LIKE` skip the shards they rule out | **Holds.** GA4's shards: 55.95 MB in all, 55.61 MB with `!= '20210131'`, 40.39 MB with `NOT LIKE '202101%'`. |
 | An outer `LIMIT 0` reads nothing | **Holds.** It processed 0 bytes, and the estimate now gives 0. |
 | BigQuery bills the whole struct column | **Doesn't hold:** it bills the fields a query reads, and the estimate now does too ([#22](https://github.com/tjslezak/Scanisaur/issues/22)). On GA4's 92 shards, `device.category` processed 36.9 MB against 310 MB for all of `device`, and `i.item_name` through `UNNEST(items) AS i` 113 MB against 992 MB. `ARRAY_LENGTH(items)` read all 992 MB. |
