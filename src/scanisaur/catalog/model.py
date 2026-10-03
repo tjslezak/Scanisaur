@@ -7,6 +7,7 @@ and unique keys. It never contains row data.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
 Granularity = Literal["HOUR", "DAY", "MONTH", "YEAR", "RANGE"]
@@ -67,6 +68,8 @@ class Table:
     #: BigQuery doesn't enforce its primary keys and most tables declare none, so these
     #: usually come from configuration. None when not known; empty when no set is unique.
     keys: tuple[tuple[str, ...], ...] | None = None
+    #: When the table's data or schema last changed, if the warehouse reports it.
+    last_modified: datetime | None = None
 
     @property
     def qualified_name(self) -> str:
