@@ -222,3 +222,12 @@ def test_tables_without_aliases_and_two_matched_columns() -> None:
         "`SUM(orders.amount)` counts each row of `orders` once for every row of `order_items` "
         "it matches, as (`order_id`, `user_id`) isn't a unique key of `order_items`."
     )
+
+
+def test_distinct_in_a_subquery_inside_the_aggregate() -> None:
+    # The DISTINCT belongs to the subquery's COUNT; the outer SUM still counts repeated rows.
+    (finding,) = fan_out(
+        "SELECT SUM(o.amount + (SELECT COUNT(DISTINCT l.user_id) FROM log l)) FROM orders o "
+        "JOIN order_items i ON i.order_id = o.order_id"
+    )
+    assert finding.message.startswith("`SUM(o.amount + (SELECT")

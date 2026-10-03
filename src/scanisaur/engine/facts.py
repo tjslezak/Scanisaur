@@ -844,7 +844,7 @@ def _aggregations(select: exp.Select, members: set[str]) -> Iterator[Aggregation
             function = _REPEATED.get(type(aggregate))
             if function is None or aggregate.find_ancestor(exp.Window) is not None:
                 continue
-            if isinstance(aggregate.this, exp.Distinct | exp.Star) or aggregate.find(exp.Distinct):
+            if isinstance(aggregate.this, exp.Distinct | exp.Star):
                 continue
             owners = {column.table for column in _local_columns(aggregate)}
             if len(owners) == 1 and owners <= members:
