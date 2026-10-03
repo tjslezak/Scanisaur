@@ -848,7 +848,9 @@ def _floor(value: datetime, unit: str) -> datetime | None:
         return day.replace(month=(day.month - 1) // 3 * 3 + 1, day=1)
     if unit == "YEAR":
         return day.replace(month=1, day=1)
-    return day
+    if unit == "DAY":
+        return day
+    return None  # an unknown unit: can't estimate, rather than guess DAY
 
 
 def _shift(value: datetime, amount: int, unit: str) -> datetime | None:

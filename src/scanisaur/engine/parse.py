@@ -12,6 +12,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
+from scanisaur.errors import ScanisaurError
+
 #: The SQL dialect Scanisaur checks. Table and column matching follow BigQuery's rules.
 DIALECT = "bigquery"
 
@@ -77,7 +79,7 @@ _NAMES = {
 _TOKEN_REPR = re.compile(r"<Token token_type: [^,]+, text: (.*?), line: .*?>")
 
 
-class SqlParseError(Exception):
+class SqlParseError(ScanisaurError):
     def __init__(self, message: str, line: int | None = None, column: int | None = None) -> None:
         super().__init__(message)
         self.message = message
