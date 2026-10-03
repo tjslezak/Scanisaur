@@ -1,5 +1,5 @@
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
@@ -390,3 +390,27 @@ def test_history_preserves_outcome_and_unknown_billing(
     assert run.error_reason == error_reason
     assert "IFNULL(total_bytes_billed" not in client.queries[-1]
     assert "error_result.reason" in client.queries[-1]
+
+
+def test_history_streams_rows_and_translates_late_errors() -> None:
+    client = FakeClient()
+    events: list[str] = []
+
+    class StreamingJob:
+        def result(self) -> Iterator[_Row]:
+            events.append("first")
+            yield _Row(HISTORY[0])
+            events.append("error")
+            raise api_exceptions.Forbidden("denied on next page")  # type: ignore[no-untyped-call]
+
+    def query(sql: str, job_config: bigquery.QueryJobConfig, location: str) -> Any:
+        return StreamingJob()
+
+    client.query = query  # type: ignore[method-assign]
+    history = _connector(client).fetch_query_history(datetime(2026, 9, 1, tzinfo=UTC))
+    assert events == []
+    assert next(history).job_id == "j1"
+    assert events == ["first"]
+    with pytest.raises(ConnectorError, match=r"bigquery\.jobs\.listAll"):
+        next(history)
+    assert events == ["first", "error"]

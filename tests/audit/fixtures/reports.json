@@ -1,0 +1,636 @@
+[
+  {
+    "count": 0,
+    "unique": false,
+    "top": 1,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 0,
+      "bytes_billed": 0,
+      "unknown_billing_runs": 0,
+      "flagged_runs": 0,
+      "flagged_bytes": 0,
+      "flagged_unknown_billing_runs": 0,
+      "failed_runs": 0,
+      "failed_bytes": 0,
+      "failed_unknown_billing_runs": 0,
+      "failed_after_block": 0,
+      "unchecked_runs": 0,
+      "ran_after_block": 0,
+      "flagged": [],
+      "tables": [],
+      "rules": []
+    }
+  },
+  {
+    "count": 0,
+    "unique": false,
+    "top": 10,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 0,
+      "bytes_billed": 0,
+      "unknown_billing_runs": 0,
+      "flagged_runs": 0,
+      "flagged_bytes": 0,
+      "flagged_unknown_billing_runs": 0,
+      "failed_runs": 0,
+      "failed_bytes": 0,
+      "failed_unknown_billing_runs": 0,
+      "failed_after_block": 0,
+      "unchecked_runs": 0,
+      "ran_after_block": 0,
+      "flagged": [],
+      "tables": [],
+      "rules": []
+    }
+  },
+  {
+    "count": 0,
+    "unique": true,
+    "top": 1,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 0,
+      "bytes_billed": 0,
+      "unknown_billing_runs": 0,
+      "flagged_runs": 0,
+      "flagged_bytes": 0,
+      "flagged_unknown_billing_runs": 0,
+      "failed_runs": 0,
+      "failed_bytes": 0,
+      "failed_unknown_billing_runs": 0,
+      "failed_after_block": 0,
+      "unchecked_runs": 0,
+      "ran_after_block": 0,
+      "flagged": [],
+      "tables": [],
+      "rules": []
+    }
+  },
+  {
+    "count": 0,
+    "unique": true,
+    "top": 10,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 0,
+      "bytes_billed": 0,
+      "unknown_billing_runs": 0,
+      "flagged_runs": 0,
+      "flagged_bytes": 0,
+      "flagged_unknown_billing_runs": 0,
+      "failed_runs": 0,
+      "failed_bytes": 0,
+      "failed_unknown_billing_runs": 0,
+      "failed_after_block": 0,
+      "unchecked_runs": 0,
+      "ran_after_block": 0,
+      "flagged": [],
+      "tables": [],
+      "rules": []
+    }
+  },
+  {
+    "count": 35,
+    "unique": false,
+    "top": 1,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 29,
+      "bytes_billed": 53687091200,
+      "unknown_billing_runs": 4,
+      "flagged_runs": 12,
+      "flagged_bytes": 30064771072,
+      "flagged_unknown_billing_runs": 2,
+      "failed_runs": 6,
+      "failed_bytes": 10737418240,
+      "failed_unknown_billing_runs": 1,
+      "failed_after_block": 0,
+      "unchecked_runs": 23,
+      "ran_after_block": 2,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1,
+          "unchecked_runs": 7
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 5,
+          "bytes_billed": 12884901888,
+          "unknown_billing_runs": 1
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1
+        }
+      ]
+    }
+  },
+  {
+    "count": 35,
+    "unique": false,
+    "top": 10,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 29,
+      "bytes_billed": 53687091200,
+      "unknown_billing_runs": 4,
+      "flagged_runs": 12,
+      "flagged_bytes": 30064771072,
+      "flagged_unknown_billing_runs": 2,
+      "failed_runs": 6,
+      "failed_bytes": 10737418240,
+      "failed_unknown_billing_runs": 1,
+      "failed_after_block": 0,
+      "unchecked_runs": 23,
+      "ran_after_block": 2,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1,
+          "unchecked_runs": 7
+        },
+        {
+          "sql": "SELECT * FROM p.d.events WHERE kind = ?",
+          "verdict": "warn",
+          "rules": [
+            "SCN005"
+          ],
+          "runs": 5,
+          "bytes_billed": 4294967296,
+          "unknown_billing_runs": 1,
+          "unchecked_runs": 5
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 5,
+          "bytes_billed": 12884901888,
+          "unknown_billing_runs": 1
+        },
+        {
+          "name": "p.d.users",
+          "runs": 6,
+          "bytes_billed": 10737418240,
+          "unknown_billing_runs": 1
+        },
+        {
+          "name": "p.d.events",
+          "runs": 5,
+          "bytes_billed": 4294967296,
+          "unknown_billing_runs": 1
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1
+        },
+        {
+          "name": "SCN005",
+          "runs": 5,
+          "bytes_billed": 4294967296,
+          "unknown_billing_runs": 1
+        }
+      ]
+    }
+  },
+  {
+    "count": 35,
+    "unique": true,
+    "top": 1,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 29,
+      "bytes_billed": 53687091200,
+      "unknown_billing_runs": 4,
+      "flagged_runs": 12,
+      "flagged_bytes": 30064771072,
+      "flagged_unknown_billing_runs": 2,
+      "failed_runs": 6,
+      "failed_bytes": 10737418240,
+      "failed_unknown_billing_runs": 1,
+      "failed_after_block": 0,
+      "unchecked_runs": 23,
+      "ran_after_block": 2,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1,
+          "unchecked_runs": 7
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 5,
+          "bytes_billed": 12884901888,
+          "unknown_billing_runs": 1
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1
+        }
+      ]
+    }
+  },
+  {
+    "count": 35,
+    "unique": true,
+    "top": 10,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 29,
+      "bytes_billed": 53687091200,
+      "unknown_billing_runs": 4,
+      "flagged_runs": 12,
+      "flagged_bytes": 30064771072,
+      "flagged_unknown_billing_runs": 2,
+      "failed_runs": 6,
+      "failed_bytes": 10737418240,
+      "failed_unknown_billing_runs": 1,
+      "failed_after_block": 0,
+      "unchecked_runs": 23,
+      "ran_after_block": 2,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1,
+          "unchecked_runs": 7
+        },
+        {
+          "sql": "SELECT * FROM p.d.events WHERE kind = ?",
+          "verdict": "warn",
+          "rules": [
+            "SCN005"
+          ],
+          "runs": 5,
+          "bytes_billed": 4294967296,
+          "unknown_billing_runs": 1,
+          "unchecked_runs": 5
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 5,
+          "bytes_billed": 12884901888,
+          "unknown_billing_runs": 1
+        },
+        {
+          "name": "p.d.users",
+          "runs": 6,
+          "bytes_billed": 10737418240,
+          "unknown_billing_runs": 1
+        },
+        {
+          "name": "p.d.events",
+          "runs": 5,
+          "bytes_billed": 4294967296,
+          "unknown_billing_runs": 1
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 7,
+          "bytes_billed": 25769803776,
+          "unknown_billing_runs": 1
+        },
+        {
+          "name": "SCN005",
+          "runs": 5,
+          "bytes_billed": 4294967296,
+          "unknown_billing_runs": 1
+        }
+      ]
+    }
+  },
+  {
+    "count": 317,
+    "unique": false,
+    "top": 1,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 266,
+      "bytes_billed": 488552529920,
+      "unknown_billing_runs": 38,
+      "flagged_runs": 124,
+      "flagged_bytes": 288836550656,
+      "flagged_unknown_billing_runs": 18,
+      "failed_runs": 51,
+      "failed_bytes": 92341796864,
+      "failed_unknown_billing_runs": 8,
+      "failed_after_block": 4,
+      "unchecked_runs": 212,
+      "ran_after_block": 17,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8,
+          "unchecked_runs": 53
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 53,
+          "bytes_billed": 148176371712,
+          "unknown_billing_runs": 7
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8
+        }
+      ]
+    }
+  },
+  {
+    "count": 317,
+    "unique": false,
+    "top": 10,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 266,
+      "bytes_billed": 488552529920,
+      "unknown_billing_runs": 38,
+      "flagged_runs": 124,
+      "flagged_bytes": 288836550656,
+      "flagged_unknown_billing_runs": 18,
+      "failed_runs": 51,
+      "failed_bytes": 92341796864,
+      "failed_unknown_billing_runs": 8,
+      "failed_after_block": 4,
+      "unchecked_runs": 212,
+      "ran_after_block": 17,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8,
+          "unchecked_runs": 53
+        },
+        {
+          "sql": "SELECT * FROM p.d.events WHERE kind = ?",
+          "verdict": "warn",
+          "rules": [
+            "SCN005"
+          ],
+          "runs": 54,
+          "bytes_billed": 50465865728,
+          "unknown_billing_runs": 7,
+          "unchecked_runs": 54
+        },
+        {
+          "sql": "SELECT SUM(value) FROM p.d.daily WHERE day = CURRENT_DATE",
+          "verdict": "warn",
+          "rules": [
+            "SCN010"
+          ],
+          "runs": 17,
+          "bytes_billed": 45097156608,
+          "unknown_billing_runs": 3,
+          "unchecked_runs": 17
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 53,
+          "bytes_billed": 148176371712,
+          "unknown_billing_runs": 7
+        },
+        {
+          "name": "p.d.users",
+          "runs": 52,
+          "bytes_billed": 96636764160,
+          "unknown_billing_runs": 7
+        },
+        {
+          "name": "p.d.events",
+          "runs": 54,
+          "bytes_billed": 50465865728,
+          "unknown_billing_runs": 7
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8
+        },
+        {
+          "name": "SCN005",
+          "runs": 54,
+          "bytes_billed": 50465865728,
+          "unknown_billing_runs": 7
+        },
+        {
+          "name": "SCN010",
+          "runs": 17,
+          "bytes_billed": 45097156608,
+          "unknown_billing_runs": 3
+        }
+      ]
+    }
+  },
+  {
+    "count": 317,
+    "unique": true,
+    "top": 1,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 266,
+      "bytes_billed": 488552529920,
+      "unknown_billing_runs": 38,
+      "flagged_runs": 124,
+      "flagged_bytes": 288836550656,
+      "flagged_unknown_billing_runs": 18,
+      "failed_runs": 51,
+      "failed_bytes": 92341796864,
+      "failed_unknown_billing_runs": 8,
+      "failed_after_block": 4,
+      "unchecked_runs": 212,
+      "ran_after_block": 17,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8,
+          "unchecked_runs": 53
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 53,
+          "bytes_billed": 148176371712,
+          "unknown_billing_runs": 7
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8
+        }
+      ]
+    }
+  },
+  {
+    "count": 317,
+    "unique": true,
+    "top": 10,
+    "report": {
+      "since": "2026-10-03T12:00:00Z",
+      "runs": 266,
+      "bytes_billed": 488552529920,
+      "unknown_billing_runs": 38,
+      "flagged_runs": 124,
+      "flagged_bytes": 288836550656,
+      "flagged_unknown_billing_runs": 18,
+      "failed_runs": 51,
+      "failed_bytes": 92341796864,
+      "failed_unknown_billing_runs": 8,
+      "failed_after_block": 4,
+      "unchecked_runs": 212,
+      "ran_after_block": 17,
+      "flagged": [
+        {
+          "sql": "DELETE FROM p.d.users WHERE TRUE",
+          "verdict": "block",
+          "rules": [
+            "SCN002"
+          ],
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8,
+          "unchecked_runs": 53
+        },
+        {
+          "sql": "SELECT * FROM p.d.events WHERE kind = ?",
+          "verdict": "warn",
+          "rules": [
+            "SCN005"
+          ],
+          "runs": 54,
+          "bytes_billed": 50465865728,
+          "unknown_billing_runs": 7,
+          "unchecked_runs": 54
+        },
+        {
+          "sql": "SELECT SUM(value) FROM p.d.daily WHERE day = CURRENT_DATE",
+          "verdict": "warn",
+          "rules": [
+            "SCN010"
+          ],
+          "runs": 17,
+          "bytes_billed": 45097156608,
+          "unknown_billing_runs": 3,
+          "unchecked_runs": 17
+        }
+      ],
+      "tables": [
+        {
+          "name": "p.d.daily",
+          "runs": 53,
+          "bytes_billed": 148176371712,
+          "unknown_billing_runs": 7
+        },
+        {
+          "name": "p.d.users",
+          "runs": 52,
+          "bytes_billed": 96636764160,
+          "unknown_billing_runs": 7
+        },
+        {
+          "name": "p.d.events",
+          "runs": 54,
+          "bytes_billed": 50465865728,
+          "unknown_billing_runs": 7
+        }
+      ],
+      "rules": [
+        {
+          "name": "SCN002",
+          "runs": 53,
+          "bytes_billed": 193273528320,
+          "unknown_billing_runs": 8
+        },
+        {
+          "name": "SCN005",
+          "runs": 54,
+          "bytes_billed": 50465865728,
+          "unknown_billing_runs": 7
+        },
+        {
+          "name": "SCN010",
+          "runs": 17,
+          "bytes_billed": 45097156608,
+          "unknown_billing_runs": 3
+        }
+      ]
+    }
+  }
+]

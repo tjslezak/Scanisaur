@@ -237,21 +237,21 @@ def audit_command(
     try:
         settings = _config(config)
         source = CachedSource(settings)
-        runs = list(source.connector.fetch_query_history(since))
+        runs = source.connector.fetch_query_history(since)
         catalog = source.current().catalog
+        decisions = read(log_directory(settings.log), since - CHECK_WINDOW)
+        report = audit(
+            runs,
+            catalog,
+            decisions,
+            since=since,
+            warehouse=source.connector.name,
+            policy=settings.policy,
+            top=top,
+        )
     except ScanisaurError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
-    decisions = read(log_directory(settings.log), since - CHECK_WINDOW)
-    report = audit(
-        runs,
-        catalog,
-        decisions,
-        since=since,
-        warehouse=source.connector.name,
-        policy=settings.policy,
-        top=top,
-    )
     typer.echo(report.model_dump_json(indent=2) if as_json else _format_report(report))
 
 

@@ -391,23 +391,20 @@ class BigQueryConnector:
         parameters = [bigquery.ScalarQueryParameter("since", "TIMESTAMP", since)]
         try:
             with _errors():
-                rows = list(self._query(sql, parameters, location=location))
+                for row in self._query(sql, parameters, location=location):
+                    yield QueryRun(
+                        row["job_id"],
+                        row["started"],
+                        row["user"],
+                        row["sql"],
+                        row["bytes_billed"],
+                        row["error_reason"],
+                    )
         except ConnectorError as error:
             raise ConnectorError(
                 f"{error}. Reading query history needs bigquery.jobs.listAll on the project, "
                 "from roles/bigquery.resourceViewer"
             ) from error
-        return (
-            QueryRun(
-                row["job_id"],
-                row["started"],
-                row["user"],
-                row["sql"],
-                row["bytes_billed"],
-                row["error_reason"],
-            )
-            for row in rows
-        )
 
     def _included(self, dataset: str) -> bool:
         w = self._warehouse
