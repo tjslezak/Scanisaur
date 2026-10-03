@@ -21,6 +21,7 @@ import shlex
 import socket
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -66,9 +67,21 @@ def policy_file(config: Path | None) -> Path | None:
 
 
 def extract_sql(call: JsonObject, tools: tuple[str, ...] = DEFAULT_TOOLS) -> str | None:
-    """The SQL in a Claude Code ``PreToolUse`` payload, or None when there is none."""
+    """The SQL in a tool call, or None when there is none.
+
+    Reads Claude Code's ``PreToolUse`` payload and Cursor's ``beforeMCPExecution`` and
+    ``beforeShellExecution`` payloads: a tool name with its arguments (an object, or a
+    JSON string of one), or a bare shell ``command``.
+    """
     name = call.get("tool_name")
     arguments = call.get("tool_input")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return None
+    if name is None and isinstance(call.get("command"), str):
+        return bq_query_sql(call["command"])
     if not isinstance(name, str) or not isinstance(arguments, dict):
         return None
     if name in SHELL_TOOLS:
@@ -81,6 +94,23 @@ def extract_sql(call: JsonObject, tools: tuple[str, ...] = DEFAULT_TOOLS) -> str
         if isinstance(value, str) and value.strip():
             return value
     return None
+
+
+def sql_from(sql: str = "", command: str = "") -> str | None:
+    """The SQL handed to the ``scanisaur_hook`` MCP tool: as is, or from a shell command.
+
+    An argument the hook's template couldn't fill arrives empty or as ``${...}``.
+    """
+    if sql.strip() and not _unfilled(sql):
+        return sql
+    if command.strip() and not _unfilled(command):
+        return bq_query_sql(command)
+    return None
+
+
+def _unfilled(value: str) -> bool:
+    value = value.strip()
+    return value.startswith("${") and value.endswith("}")
 
 
 def bq_query_sql(command: str) -> str | None:
@@ -163,9 +193,22 @@ def claude_output(result: JsonObject) -> JsonObject | None:
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", **decision}}
 
 
-def unchecked_output(reason: str) -> JsonObject:
+def cursor_output(result: JsonObject) -> JsonObject | None:
+    """Cursor's answer for a check result: deny on block, findings for the agent on warn."""
+    verdict = result.get("verdict")
+    if verdict == "block":
+        reason = _explain(result)
+        return {"permission": "deny", "user_message": reason, "agent_message": reason}
+    if verdict == "warn":
+        return {"permission": "allow", "agent_message": _explain(result)}
+    return None
+
+
+def unchecked_output(reason: str, output_format: str = "claude") -> JsonObject:
     """The answer when the SQL couldn't be checked: let it run, and say so."""
     context = f"Scanisaur couldn't check this SQL ({reason}), so it ran unchecked."
+    if output_format == "cursor":
+        return {"permission": "allow", "agent_message": context}
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}
 
 
@@ -182,6 +225,35 @@ def _explain(result: JsonObject) -> str:
     return "\n".join(lines)
 
 
+def adk_callback(
+    catalog: Path, config: Path | None = None, tools: tuple[str, ...] = DEFAULT_TOOLS
+) -> Callable[[Any, dict[str, Any], Any], JsonObject | None]:
+    """A Google ADK ``before_tool_callback`` that checks SQL tool calls.
+
+    On block, it returns the findings as the tool's result, so the tool doesn't run and
+    the agent reads the fixes. Otherwise it returns None and the tool runs. ADK can't
+    attach findings to a call it lets run, so warnings aren't shown.
+    """
+    config = policy_file(config)
+    path = socket_path(catalog, config)
+
+    def before_tool_callback(
+        tool: Any, args: dict[str, Any], tool_context: Any
+    ) -> JsonObject | None:
+        sql = extract_sql({"tool_name": getattr(tool, "name", None), "tool_input": args}, tools)
+        if sql is None:
+            return None
+        result = request_check(path, sql)
+        if result is None:
+            try:
+                result = check_here(sql, catalog, config)
+            except (OSError, ValueError):
+                return None  # fail open, as the command does
+        return {"error": _explain(result)} if result.get("verdict") == "block" else None
+
+    return before_tool_callback
+
+
 def main(argv: list[str] | None = None) -> int:
     """Read one tool call from stdin and print the harness's answer. Always exits 0: a
     decision is in the JSON, so a crash here can never block the agent."""
@@ -192,6 +264,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--catalog", "-c", type=Path, required=True)
     parser.add_argument("--config", type=Path)
+    parser.add_argument(
+        "--format",
+        choices=("claude", "cursor"),
+        default="claude",
+        help="The harness that runs the hook (default: claude, for Claude Code).",
+    )
     parser.add_argument(
         "--tool",
         action="append",
@@ -215,9 +293,9 @@ def main(argv: list[str] | None = None) -> int:
             result = check_here(sql, args.catalog, config)
         except (OSError, ValueError) as error:  # a missing or bad catalog or policy file
             print(f"scanisaur hook: {error}", file=sys.stderr)
-            print(json.dumps(unchecked_output(str(error))))
+            print(json.dumps(unchecked_output(str(error), args.format)))
             return 0
-    output = claude_output(result)
+    output = cursor_output(result) if args.format == "cursor" else claude_output(result)
     if output is not None:
         print(json.dumps(output))
     return 0

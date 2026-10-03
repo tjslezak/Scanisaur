@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,8 +19,10 @@ from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE
 from scanisaur.engine.check import Policy
 from scanisaur.hook import (
+    adk_callback,
     bq_query_sql,
     claude_output,
+    cursor_output,
     extract_sql,
     request_check,
     socket_path,
@@ -276,3 +279,85 @@ def test_hook_against_a_running_serve() -> None:
     finally:
         serve.terminate()
         serve.wait(timeout=10)
+
+
+class TestCursor:
+    def test_mcp_tool_input_as_a_json_string(self) -> None:
+        call = {"tool_name": "execute_sql", "tool_input": json.dumps({"query": GOOD_SQL})}
+        assert extract_sql(call) == GOOD_SQL
+
+    def test_shell_command(self) -> None:
+        assert extract_sql({"command": f"bq query '{GOOD_SQL}'", "cwd": "/x"}) == GOOD_SQL
+
+    def test_bad_json_string(self) -> None:
+        assert extract_sql({"tool_name": "execute_sql", "tool_input": "{nope"}) is None
+
+    def test_outputs(self) -> None:
+        finding = {"rule": "SCN001", "severity": "block", "message": "No.", "fix": None}
+        assert cursor_output({"verdict": "pass", "findings": []}) is None
+        warn = cursor_output({"verdict": "warn", "findings": [finding]})
+        assert warn is not None
+        assert warn["permission"] == "allow"
+        block = cursor_output({"verdict": "block", "findings": [finding]})
+        assert block is not None
+        assert block["permission"] == "deny"
+        assert "SCN001" in block["agent_message"]
+
+    def test_main(
+        self, sock: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(hook, "socket_path", lambda catalog, config: sock)
+        call = {"command": f"bq query '{BAD_SQL}'"}
+        output = json.loads(_run_hook(call, monkeypatch, capsys, "--format", "cursor"))
+        assert output["permission"] == "deny"
+
+    def test_fails_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"command": "bq query 'S'"})))
+        missing = str(tmp_path / "missing.yaml")
+        assert hook.main(["--format", "cursor", "--catalog", missing]) == 0
+        assert json.loads(capsys.readouterr().out)["permission"] == "allow"
+
+
+class TestAdk:
+    class Tool:
+        name = "execute_sql"
+
+    def test_block_returns_the_fixes(self, sock: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook, "socket_path", lambda catalog, config: sock)
+        callback = adk_callback(CATALOG)
+        answer = callback(self.Tool(), {"query": BAD_SQL}, None)
+        assert answer is not None
+        assert "Did you mean `user_id`?" in answer["error"]
+
+    def test_pass_and_other_tools_run(self, sock: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook, "socket_path", lambda catalog, config: sock)
+        callback = adk_callback(CATALOG)
+        assert callback(self.Tool(), {"query": GOOD_SQL}, None) is None
+        assert callback(object(), {"query": BAD_SQL}, None) is None
+
+    def test_fails_open(self, tmp_path: Path) -> None:
+        callback = adk_callback(tmp_path / "missing.yaml")
+        assert callback(self.Tool(), {"query": BAD_SQL}, None) is None
+
+
+DOCS = Path(__file__).parents[1] / "docs"
+
+
+@pytest.mark.parametrize("page", ["clients/README.md", "hooks/README.md"])
+def test_json_examples_in_docs_parse(page: str) -> None:
+    text = (DOCS / page).read_text(encoding="utf-8")
+    blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    assert blocks
+    for block in blocks:
+        json.loads(block)
+
+
+def test_claude_code_hook_example_calls_the_hook_tool() -> None:
+    text = (DOCS / "hooks" / "README.md").read_text(encoding="utf-8")
+    settings = json.loads(re.findall(r"```json\n(.*?)```", text, re.DOTALL)[0])
+    for entry in settings["hooks"]["PreToolUse"]:
+        (handler,) = entry["hooks"]
+        assert handler["server"] == "scanisaur"
+        assert handler["tool"] == "scanisaur_hook"

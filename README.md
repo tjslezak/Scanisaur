@@ -25,6 +25,8 @@ Scanisaur never reads table data and never runs the queries it checks. The agent
 uv run scanisaur serve --catalog tests/golden/catalog.yaml
 ```
 
+[docs/clients](docs/clients/README.md) has the configs for Claude Code, Cursor and Claude Desktop, and the instruction to paste into the agent's prompt. [docs/hooks](docs/hooks/README.md) has hooks for Claude Code, Cursor and Google ADK, which check every SQL tool call whether or not the agent remembers to.
+
 ## Development
 
 You need [uv](https://docs.astral.sh/uv/).

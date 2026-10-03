@@ -7,6 +7,7 @@ to the agent and turns their results into MCP responses.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated
@@ -19,6 +20,7 @@ from scanisaur import __version__, tools
 from scanisaur.catalog.source import CatalogSource
 from scanisaur.engine.check import Policy
 from scanisaur.engine.result import CheckResult
+from scanisaur.hook import claude_output, sql_from
 from scanisaur.listener import hook_listener
 
 #: Sent when a client connects. The agent evaluation (#10) tunes these words.
@@ -96,6 +98,20 @@ def build_server(
         bill, findings with fixes, and a tag to add to the query."""
         result = tools.check_sql(sql, source.current(), policy)
         return _result(result, tools.summary(result))
+
+    @server.tool(name="scanisaur_hook", annotations=_READ_ONLY, structured_output=False)
+    def hook(
+        sql: Annotated[str, Field(description="SQL from the tool call.")] = "",
+        command: Annotated[str, Field(description="A shell command that may run SQL.")] = "",
+    ) -> CallToolResult:
+        """For Claude Code's PreToolUse hook only. Agents: call scanisaur_check_sql."""
+        found = sql_from(sql, command)
+        if found is None:
+            return CallToolResult(content=[TextContent(type="text", text="")])
+        result = tools.check_sql(found, source.current(), policy).model_dump(mode="json")
+        output = claude_output(result)
+        text = "" if output is None else json.dumps(output)
+        return CallToolResult(content=[TextContent(type="text", text=text)])
 
     return server
 

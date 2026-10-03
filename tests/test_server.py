@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from mcp import Client
 from mcp.types import CallToolResult, TextContent
 
@@ -14,6 +15,7 @@ from scanisaur.server import INSTRUCTIONS, build_server
 
 CATALOG = Path(__file__).parent / "golden" / "catalog.yaml"
 TOOLS = {"scanisaur_schema_search", "scanisaur_schema_describe", "scanisaur_check_sql"}
+HOOK_TOOL = "scanisaur_hook"
 
 
 def _call(name: str, arguments: dict[str, Any]) -> CallToolResult:
@@ -40,10 +42,10 @@ def test_lists_three_read_only_tools_with_schemas() -> None:
             return (await client.list_tools()).tools
 
     tools = asyncio.run(list_tools())
-    assert {tool.name for tool in tools} == TOOLS
+    assert {tool.name for tool in tools} == {*TOOLS, HOOK_TOOL}
     for tool in tools:
         assert tool.description
-        assert tool.output_schema is not None
+        assert (tool.output_schema is None) == (tool.name == HOOK_TOOL)
         assert tool.annotations is not None
         assert tool.annotations.read_only_hint
 
@@ -77,6 +79,34 @@ def test_schema_describe_reports_unknown_names() -> None:
 def test_describe_refuses_more_than_five_tables() -> None:
     result = _call("scanisaur_schema_describe", {"tables": ["users"] * 6})
     assert result.is_error
+
+
+class TestHookTool:
+    """The tool Claude Code's mcp_tool hook calls; its text is the hook's answer."""
+
+    def test_block_denies(self) -> None:
+        result = _call(HOOK_TOOL, {"sql": "SELECT usr_id FROM users"})
+        output = json.loads(_text(result))
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "Did you mean `user_id`?" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_bq_command(self) -> None:
+        result = _call(HOOK_TOOL, {"command": "bq query 'SELECT usr_id FROM users'"})
+        assert json.loads(_text(result))["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            {"sql": "SELECT day FROM calendar"},
+            {"command": "ls"},
+            {"sql": "${tool_input.query}"},
+            {},
+        ],
+    )
+    def test_says_nothing(self, arguments: dict[str, str]) -> None:
+        result = _call(HOOK_TOOL, arguments)
+        assert not result.is_error
+        assert _text(result) == ""
 
 
 def test_serve_speaks_only_json_rpc_on_stdout() -> None:
