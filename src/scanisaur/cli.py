@@ -4,6 +4,7 @@ import dataclasses
 import sys
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, TypeVar
 
@@ -11,6 +12,7 @@ import typer
 
 from scanisaur import __version__
 from scanisaur.catalog.cached import CachedSource
+from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config
 from scanisaur.engine.check import check
@@ -165,6 +167,55 @@ def refresh_command(
     typer.echo(
         f"refreshed {count} table{'' if count == 1 else 's'} in {time.perf_counter() - start:.1f} s"
     )
+
+
+@app.command("doctor")
+def doctor_command(
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+) -> None:
+    """Check access to the warehouse: metadata readable, table data not.
+
+    Exit codes: 0 every check passed; 1 a warning or failure; 2 no usable policy file.
+    """
+    try:
+        settings = _config(config)
+        source = CachedSource(settings)
+        connector = source.connector
+    except ScanisaurError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    probes = [*connector.check_access(), _cache_probe(source, settings)]
+    for probe in probes:
+        typer.echo(f"{probe.status:<5} {probe.name}: {probe.detail}")
+    raise typer.Exit(EXIT_OK if all(p.status == "ok" for p in probes) else EXIT_BLOCKED)
+
+
+def _cache_probe(source: CachedSource, config: Config) -> Probe:
+    try:
+        snapshot = source.cached()
+    except ScanisaurError as error:
+        return Probe("cache", "fail", str(error))
+    if snapshot is None or snapshot.fetched_at is None:
+        return Probe("cache", "ok", "empty: the first check or `scanisaur refresh` fills it")
+    age = datetime.now(UTC) - snapshot.fetched_at
+    count = len(snapshot.catalog.tables)
+    detail = f"{count} tables, refreshed {_age(age)} ago"
+    if age > config.cache.ttl:
+        return Probe("cache", "ok", f"{detail}; the next check refreshes it")
+    return Probe("cache", "ok", detail)
+
+
+def _age(age: timedelta) -> str:
+    minutes = int(age.total_seconds() // 60)
+    return f"{minutes} min" if minutes < 120 else f"{minutes // 60} h"
 
 
 def _config(path: Path | None) -> Config:

@@ -47,6 +47,9 @@ from scanisaur.config import BigQueryWarehouse
 #: Partitioned tables at least this large get per-partition sizes.
 PARTITIONS_FROM_BYTES = 10 * 2**30
 
+#: Permissions that let an account read or change table data. Catalog-only access has
+#: neither (docs/spikes/0003-permissions.md).
+DATA_PERMISSIONS = ("bigquery.tables.getData", "bigquery.tables.updateData")
 #: A date-sharded table such as ``events_20260930``.
 _SHARD = re.compile(r"(?P<family>.+_)(?P<suffix>\d{8})")
 _KINDS: dict[str, TableKind] = {
@@ -289,7 +292,63 @@ class BigQueryConnector:
         return _from_api(table)
 
     def check_access(self) -> list[Probe]:
-        raise NotImplementedError  # scanisaur doctor, next step
+        """Credentials, the project-wide views a refresh needs, and data access.
+
+        Data access is tested with ``testIamPermissions`` on one table per dataset, which
+        is free and reads no data. The one query bills BigQuery's 10 MiB minimum.
+        """
+        try:
+            with _errors():
+                client = self.client
+                datasets = self._datasets()
+        except ConnectorError as error:
+            return [Probe("credentials", "fail", str(error))]
+        probes = [
+            Probe("credentials", "ok", f"{len(datasets)} datasets in {self._warehouse.project}")
+        ]
+        try:
+            with _errors():
+                list(self._query(f"SELECT 1 FROM {self._region('COLUMNS')} LIMIT 1"))
+            probes.append(
+                Probe("metadata", "ok", "can read the project-wide INFORMATION_SCHEMA views")
+            )
+        except ConnectorError as error:
+            probes.append(
+                Probe(
+                    "metadata",
+                    "fail",
+                    f"{error}. Grant roles/bigquery.metadataViewer and roles/bigquery.jobUser "
+                    "on the project; a basic role such as Owner isn't enough",
+                )
+            )
+        readable = []
+        for dataset in datasets:
+            try:
+                with _errors():
+                    tables = list(
+                        client.list_tables(f"{self._warehouse.project}.{dataset}", max_results=1)
+                    )
+                    if not tables:
+                        continue
+                    granted = client.test_iam_permissions(tables[0], DATA_PERMISSIONS)
+            except ConnectorError as error:
+                probes.append(Probe(f"data access: {dataset}", "fail", str(error)))
+                continue
+            if granted.get("permissions"):
+                readable.append(dataset)
+        if readable:
+            probes.append(
+                Probe(
+                    "data access",
+                    "warn",
+                    f"this account can read or change table data in {', '.join(readable)}. "
+                    "Catalog-only access needs only metadataViewer and jobUser. "
+                    "IAM changes can take several minutes to apply",
+                )
+            )
+        else:
+            probes.append(Probe("data access", "ok", "can't read table data"))
+        return probes
 
     def _included(self, dataset: str) -> bool:
         w = self._warehouse

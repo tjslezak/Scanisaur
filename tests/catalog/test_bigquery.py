@@ -124,11 +124,17 @@ class FakeClient:
     def __init__(self) -> None:
         self.queries: list[str] = []
         self.partition_tables: list[str] = []
+        self.metadata_denied = False
+        self.data_readable: set[str] = set()
+
+    def test_iam_permissions(self, table: TableListItem, permissions: Sequence[str]) -> Any:
+        granted = list(permissions) if table.dataset_id in self.data_readable else []
+        return {"permissions": granted}
 
     def list_datasets(self, project: str) -> list[Any]:
         return [bigquery.DatasetReference(project, d) for d in ("analytics", "ga4", "scratch")]
 
-    def list_tables(self, dataset: str) -> list[TableListItem]:
+    def list_tables(self, dataset: str, max_results: int | None = None) -> list[TableListItem]:
         name = dataset.split(".")[1]
         return [
             TableListItem(  # type: ignore[no-untyped-call]
@@ -145,7 +151,11 @@ class FakeClient:
     def query(self, sql: str, job_config: bigquery.QueryJobConfig) -> Any:
         self.queries.append(sql)
         rows: Sequence[tuple[object, ...]]
-        if "PARTITIONS" in sql:
+        if self.metadata_denied:
+            raise api_exceptions.Forbidden("Access Denied: INFORMATION_SCHEMA")  # type: ignore[no-untyped-call]
+        if sql.strip().endswith("LIMIT 1"):
+            rows = []
+        elif "PARTITIONS" in sql:
             [parameter] = job_config.query_parameters
             self.partition_tables += parameter.values
             rows = ROWS.partitions
@@ -246,3 +256,41 @@ def test_api_errors_are_connector_errors() -> None:
 
 def test_name() -> None:
     assert _connector(FakeClient()).name == "bigquery:proj:EU"
+
+
+def test_check_access_catalog_only() -> None:
+    probes = _connector(FakeClient()).check_access()
+    assert [(p.name, p.status) for p in probes] == [
+        ("credentials", "ok"),
+        ("metadata", "ok"),
+        ("data access", "ok"),
+    ]
+    assert probes[0].detail == "3 datasets in proj"
+
+
+def test_check_access_warns_on_data_access() -> None:
+    client = FakeClient()
+    client.data_readable = {"analytics"}
+    probe = _connector(client).check_access()[-1]
+    assert (probe.name, probe.status) == ("data access", "warn")
+    assert "read or change table data in analytics" in probe.detail
+    assert "several minutes" in probe.detail
+
+
+def test_check_access_without_project_views() -> None:
+    client = FakeClient()
+    client.metadata_denied = True
+    probe = _connector(client).check_access()[1]
+    assert (probe.name, probe.status) == ("metadata", "fail")
+    assert "roles/bigquery.metadataViewer" in probe.detail
+
+
+def test_check_access_without_credentials() -> None:
+    client = FakeClient()
+
+    def denied(project: str) -> list[Any]:
+        raise api_exceptions.Forbidden("Access Denied")  # type: ignore[no-untyped-call]
+
+    client.list_datasets = denied  # type: ignore[method-assign]
+    [probe] = _connector(client).check_access()
+    assert (probe.name, probe.status) == ("credentials", "fail")

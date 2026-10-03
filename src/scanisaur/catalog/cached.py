@@ -54,17 +54,22 @@ class CachedSource:
             self._connector = connect(self._config.warehouse)
         return self._connector
 
-    def current(self) -> Snapshot:
+    def cached(self) -> Snapshot | None:
+        """The saved snapshot, without contacting the warehouse."""
         if self._snapshot is None:
             self._snapshot = self._cache.load()
-        if self._snapshot is None:
+        return self._snapshot
+
+    def current(self) -> Snapshot:
+        snapshot = self.cached()
+        if snapshot is None:
             return self.refresh()
-        if self._stale(self._snapshot):
+        if self._stale(snapshot):
             try:
                 return self.refresh()
             except ConnectorError as error:
                 logger.warning("using a stale catalog, refresh failed: %s", error)
-        return self._snapshot
+        return snapshot
 
     def snapshot_for(self, sql: str) -> Snapshot:
         """The current snapshot, with any table ``sql`` reads that it lacks fetched once.

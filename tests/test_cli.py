@@ -262,3 +262,27 @@ class TestWarehouse:
         )
         assert result.exit_code == EXIT_OK, result.output
         assert "SCN001" not in result.stdout
+
+    def test_doctor(self, config: Path) -> None:
+        result = runner.invoke(app, ["doctor", "--config", str(config)])
+        assert result.exit_code == EXIT_OK, result.output
+        lines = result.stdout.splitlines()
+        assert lines[0].startswith("ok    metadata: 2 tables in ")
+        assert lines[1] == "ok    cache: empty: the first check or `scanisaur refresh` fills it"
+        runner.invoke(app, ["refresh", "--config", str(config)])
+        result = runner.invoke(app, ["doctor", "--config", str(config)])
+        assert "ok    cache: 2 tables, refreshed 0 min ago" in result.stdout
+
+    def test_doctor_fails(self, config: Path) -> None:
+        (config.parent / "shop.duckdb").unlink()
+        result = runner.invoke(app, ["doctor", "--config", str(config)])
+        assert result.exit_code == EXIT_BLOCKED
+        assert result.stdout.startswith("fail  metadata: ")
+
+    def test_doctor_without_warehouse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == EXIT_ERROR
+        assert "names no warehouse" in result.stderr
