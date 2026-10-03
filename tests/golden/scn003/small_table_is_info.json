@@ -1,12 +1,20 @@
 {
   "schema_version": 1,
-  "verdict": "pass",
+  "verdict": "warn",
   "findings": [
     {
       "rule": "SCN003",
       "severity": "info",
       "message": "`proj.web.daily_sample` is partitioned by `day`, but the query doesn't filter on it, so it reads every partition (13.5 MB in all).",
       "fix": "Add a filter on `day`, for example `day >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 2,
+      "column": 28
+    },
+    {
+      "rule": "SCN009",
+      "severity": "warn",
+      "message": "The query returns every row it reads of `proj.web.daily_sample`, about 180,000 rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
+      "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
       "line": 2,
       "column": 28
     }

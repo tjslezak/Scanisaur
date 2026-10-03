@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`v.visitor_id = c.visitor_id` compares INT64 with FLOAT64, so BigQuery converts both sides to FLOAT64. It holds whole numbers exactly only up to 2^53 (9,007,199,254,740,992), so larger IDs that differ can match.",
+      "fix": "Compare exact values: `CAST(v.visitor_id AS INT64)`.",
+      "line": 3,
+      "column": 30
+    }
+  ],
+  "tables": [
+    "proj.shop.visits",
+    "proj.shop.visitors"
+  ],
+  "estimate": {
+    "bytes_low": 27262976,
+    "bytes_high": 27262976,
+    "confidence": "medium",
+    "usd_low": 0.0002,
+    "usd_high": 0.0002
+  }
+}

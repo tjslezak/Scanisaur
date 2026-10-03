@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN009",
+      "severity": "warn",
+      "message": "The query returns every row it reads of `proj.web.trends`, about 1.5 million rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
+      "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
+      "line": 2,
+      "column": 30
+    }
+  ],
+  "tables": [
+    "proj.web.trends"
+  ],
+  "estimate": {
+    "bytes_low": 41943040,
+    "bytes_high": 41943040,
+    "confidence": "medium",
+    "usd_low": 0.0002,
+    "usd_high": 0.0002
+  }
+}

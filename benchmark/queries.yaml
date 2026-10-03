@@ -1,6 +1,6 @@
 # Queries for the dry-run benchmark (issue #10). Each is dry-run against BigQuery and
 # checked by Scanisaur. `expect` lists the rules that should fire, from SCN003, SCN004,
-# SCN005, SCN006 and SCN011; an empty list means the query should pass. Traps and their fixes
+# SCN005, SCN006, SCN008, SCN009 and SCN011; an empty list means the query should pass. Traps and their fixes
 # come in pairs, after the patterns in issue #10.
 #
 # Rolling tables (Trends, deps.dev, PyPI) are queried at fixed days they keep, or
@@ -8,11 +8,12 @@
 
 # Google Trends: partition filter optional, not clustered, about 40 daily snapshots.
 - id: trends-one-day
+  expect: [SCN009]
   sql: >-
     SELECT term, rank FROM `bigquery-public-data.google_trends.top_terms`
     WHERE refresh_date = DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
 - id: trends-no-filter
-  expect: [SCN003]
+  expect: [SCN003, SCN009]
   sql: SELECT term, rank FROM `bigquery-public-data.google_trends.top_terms`
 - id: trends-week-instead-of-refresh-date
   expect: [SCN003]
@@ -29,11 +30,13 @@
     SELECT term, score FROM `bigquery-public-data.google_trends.top_terms`
     WHERE refresh_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 - id: trends-range-of-days
+  expect: [SCN009]
   sql: >-
     SELECT dma_name, term FROM `bigquery-public-data.google_trends.top_terms`
     WHERE refresh_date BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY)
     AND DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 - id: trends-two-days-in-list
+  expect: [SCN009]
   sql: >-
     SELECT term FROM `bigquery-public-data.google_trends.top_terms`
     WHERE refresh_date IN (DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY),
@@ -49,6 +52,7 @@
     SELECT term FROM `bigquery-public-data.google_trends.top_terms`
     WHERE EXTRACT(MONTH FROM refresh_date) = EXTRACT(MONTH FROM CURRENT_DATE())
 - id: trends-date-trunc-week
+  expect: [SCN009]
   sql: >-
     SELECT term FROM `bigquery-public-data.google_trends.top_terms`
     WHERE DATE_TRUNC(refresh_date, WEEK) = DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY), WEEK)
@@ -60,7 +64,7 @@
   expect: [SCN003, SCN005]
   sql: SELECT * FROM `bigquery-public-data.google_trends.top_terms` LIMIT 10
 - id: trends-star-except
-  expect: [SCN003, SCN005]
+  expect: [SCN003, SCN005, SCN009]
   sql: SELECT * EXCEPT (dma_id) FROM `bigquery-public-data.google_trends.top_terms`
 - id: trends-limit-zero
   sql: SELECT * FROM `bigquery-public-data.google_trends.top_terms` LIMIT 0
@@ -86,6 +90,7 @@
     WHERE a.refresh_date = DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
     AND b.refresh_date = DATE_SUB(CURRENT_DATE(), INTERVAL 9 DAY)
 - id: trends-union-of-days
+  expect: [SCN009]
   sql: >-
     SELECT term FROM `bigquery-public-data.google_trends.top_terms`
     WHERE refresh_date = DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
@@ -301,6 +306,40 @@
   sql: >-
     SELECT SUM(e.sequence_number * u.age) FROM `bigquery-public-data.thelook_ecommerce.events` AS e
     CROSS JOIN `bigquery-public-data.thelook_ecommerce.users` AS u
+
+# Comparisons between types (SCN008): a date read as midnight, and types BigQuery refuses.
+- id: thelook-orders-through-month-end
+  expect: [SCN008]
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.orders`
+    WHERE created_at BETWEEN '2024-01-01' AND '2024-01-31'
+- id: thelook-orders-half-open-month
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.orders`
+    WHERE created_at >= '2024-01-01' AND created_at < '2024-02-01'
+- id: thelook-user-id-quoted
+  expect: [SCN008]
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.orders` WHERE user_id = '42'
+- id: thelook-user-id-number
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.orders` WHERE user_id = 42
+- id: pageviews-hour-equals-day
+  expect: [SCN008]
+  sql: >-
+    SELECT SUM(views) FROM `bigquery-public-data.wikipedia.pageviews_2025`
+    WHERE datehour = '2025-06-01' AND wiki = 'en' AND title = 'Python_(programming_language)'
+
+# Results with every row of a table (SCN009).
+- id: thelook-users-every-row
+  expect: [SCN009]
+  sql: SELECT id, country FROM `bigquery-public-data.thelook_ecommerce.users`
+- id: thelook-users-by-country
+  sql: >-
+    SELECT country, COUNT(*) AS users FROM `bigquery-public-data.thelook_ecommerce.users`
+    GROUP BY country
+- id: thelook-users-sample
+  sql: SELECT id, country FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 100
 
 # Mixes: a required and an optional table in one query.
 - id: mix-trending-articles

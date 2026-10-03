@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`v.started_at > DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)` compares DATETIME `v.started_at` with a date, which means midnight, so it keeps the rest of that day too.",
+      "fix": "Start from the next day instead: `v.started_at >= DATE_ADD(DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY), INTERVAL 1 DAY)`.",
+      "line": 2,
+      "column": 9
+    },
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`v.started_at <= CURRENT_DATE()` compares DATETIME `v.started_at` with a date, which means midnight, so it leaves out the rest of that day.",
+      "fix": "Compare with the next day instead: `v.started_at < DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)`.",
+      "line": 3,
+      "column": 7
+    }
+  ],
+  "tables": [
+    "proj.shop.visits"
+  ],
+  "estimate": {
+    "bytes_low": 16777216,
+    "bytes_high": 16777216,
+    "confidence": "high",
+    "usd_low": 0.0001,
+    "usd_high": 0.0001
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`p.datehour <> '2026-09-30'` compares TIMESTAMP `p.datehour` with a date, which means midnight UTC, so it drops only rows at exactly midnight, not the whole day.",
+      "fix": "Compare days instead: `DATE(p.datehour)` in place of `p.datehour`.",
+      "line": 2,
+      "column": 70
+    }
+  ],
+  "tables": [
+    "proj.web.pageviews"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 560000401408,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 3.1832
+  }
+}

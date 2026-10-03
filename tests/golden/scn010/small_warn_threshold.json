@@ -3,6 +3,14 @@
   "verdict": "warn",
   "findings": [
     {
+      "rule": "SCN009",
+      "severity": "warn",
+      "message": "The query returns every row it reads of `proj.analytics.users`, about 5 million rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
+      "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
+      "line": 2,
+      "column": 21
+    },
+    {
       "rule": "SCN010",
       "severity": "warn",
       "message": "The query would bill 431 MB, at or over the warn threshold of 100 MB.",

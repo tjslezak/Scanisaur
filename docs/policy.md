@@ -13,6 +13,7 @@ policy:
   block_bytes: 1TiB
   cross_join_warn_pairs: 100000000      # SCN006
   cross_join_block_pairs: 10000000000
+  unbounded_result_rows: 10000          # SCN009
   rules:                  # per-rule severity: off, info, warn or block
     SCN005: off
 ```

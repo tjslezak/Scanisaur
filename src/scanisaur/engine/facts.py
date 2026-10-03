@@ -580,7 +580,7 @@ def _product(
         bound = _row_bound(source.expression)
         if bound is None or bound > 1:  # one row pairs with each row once
             node = scope.selected_sources[alias][0]
-            members[alias] = DerivedSource(alias=alias, rows=bound, position=_written_at(node))
+            members[alias] = DerivedSource(alias=alias, rows=bound, position=written_at(node))
     if len(members) < 2:
         return None
     owners = _unnest_owners(scope, members.keys())
@@ -619,7 +619,7 @@ def _product(
     return Product(
         groups=tuple(tuple(members[alias] for alias in group) for group in groups),
         inequality=(
-            _shown(inequality)
+            shown_sql(inequality)
             if inequality is not None and len(related.groups(order)) == 1
             else None
         ),
@@ -671,12 +671,12 @@ def _early_limit(select: exp.Select) -> int | None:
         return None
     if any(select.args.get(k) for k in ("order", "group", "distinct", "having", "qualify")):
         return None
-    if _select_aggregated(select) or any(p.find(exp.Window) for p in select.expressions):
+    if select_aggregated(select) or any(p.find(exp.Window) for p in select.expressions):
         return None
     return int(value.this)
 
 
-def _shown(condition: exp.Expr) -> str:
+def shown_sql(condition: exp.Expr) -> str:
     """A condition as an agent would write it: qualified, without needless backticks."""
     shown = condition.copy()
     for identifier in shown.find_all(exp.Identifier):
@@ -685,7 +685,7 @@ def _shown(condition: exp.Expr) -> str:
     return shown.sql(dialect=DIALECT)
 
 
-def _written_at(node: exp.Expr) -> tuple[int | None, int | None]:
+def written_at(node: exp.Expr) -> tuple[int | None, int | None]:
     """Where a node is written: its own position, or the first one found inside it, as
     for a subquery in parentheses."""
     for inner in node.walk():
@@ -758,7 +758,7 @@ def _row_bound(query: exp.Expr) -> int | None:
     shape: int | None = None
     if isinstance(query, exp.Select):
         if query.args.get("from_") is None or (
-            query.args.get("group") is None and _select_aggregated(query)
+            query.args.get("group") is None and select_aggregated(query)
         ):
             shape = 1
     elif isinstance(query, exp.Union) and not query.args.get("distinct"):
@@ -1095,7 +1095,7 @@ def _pushable(select: exp.Select) -> dict[str, exp.Expr]:
     if any(isinstance(g, exp.Rollup | exp.Cube | exp.GroupingSets) for g in group_items):
         return {}  # their total rows have NULL keys and read every input row
     projections = {p.alias_or_name.lower(): p.unalias() for p in select.expressions}
-    if group is None and _select_aggregated(select):
+    if group is None and select_aggregated(select):
         return {}  # one row for the whole input; a window aggregate keeps every row
     alias_keys = _named_in(group, set(projections))
     pushable: dict[str, exp.Expr] = {}
@@ -1413,12 +1413,12 @@ def _aggregated(expression: exp.Expr) -> bool:
             stack.append(node.this)
         elif isinstance(node, exp.SetOperation):
             stack.extend((node.left, node.right))
-        elif not _select_aggregated(node):
+        elif not select_aggregated(node):
             return False
     return True
 
 
-def _select_aggregated(node: exp.Expr) -> bool:
+def select_aggregated(node: exp.Expr) -> bool:
     if not isinstance(node, exp.Select):
         return False
     if node.args.get("group"):

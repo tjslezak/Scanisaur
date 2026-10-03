@@ -97,6 +97,7 @@ class _PolicySpec(_Spec):
     block_bytes: int | None = DEFAULT_POLICY.block_bytes
     cross_join_warn_pairs: int = Field(default=DEFAULT_POLICY.cross_join_warn_pairs, ge=0)
     cross_join_block_pairs: int = Field(default=DEFAULT_POLICY.cross_join_block_pairs, ge=0)
+    unbounded_result_rows: int = Field(default=DEFAULT_POLICY.unbounded_result_rows, ge=0)
     rules: dict[str, RuleSetting] = Field(default_factory=dict)
 
     @field_validator("warn_bytes", "block_bytes", mode="before")
@@ -164,6 +165,7 @@ def load_policy(path: str | os.PathLike[str]) -> Policy:
         price_per_tib=price,
         cross_join_warn_pairs=policy.cross_join_warn_pairs,
         cross_join_block_pairs=policy.cross_join_block_pairs,
+        unbounded_result_rows=policy.unbounded_result_rows,
         warn_bytes=policy.warn_bytes,
         block_bytes=policy.block_bytes,
         rules=policy.rules,
