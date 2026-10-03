@@ -1,27 +1,35 @@
 {
   "schema_version": 1,
-  "verdict": "warn",
+  "verdict": "block",
   "findings": [
     {
       "rule": "SCN003",
       "severity": "warn",
       "message": "`proj.analytics.events` is partitioned by `event_date`, but the query doesn't filter on it, so it reads every partition (2.1 TB in all).",
       "fix": "Add a filter on `event_date`, for example `event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
-      "line": 1,
-      "column": 21
+      "line": 2,
+      "column": 15
+    },
+    {
+      "rule": "SCN005",
+      "severity": "warn",
+      "message": "Selecting `*` reads every column of `proj.analytics.events` in the partitions the query touches, about 2.1 TB.",
+      "fix": "Select only the columns you need. For column names and types, use `scanisaur_schema_describe`, which reads no data.",
+      "line": 2,
+      "column": 15
     },
     {
       "rule": "SCN009",
       "severity": "warn",
       "message": "The query returns every row it reads of `proj.analytics.events`, about 1.2 billion rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
       "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
-      "line": 1,
-      "column": 21
+      "line": 2,
+      "column": 15
     },
     {
       "rule": "SCN010",
-      "severity": "warn",
-      "message": "The query would bill 346.8 GB, at or over the warn threshold of 100 GiB.",
+      "severity": "block",
+      "message": "The query would bill 2.1 TB, at or over the block threshold of 1 TiB.",
       "fix": "Read less: filter on the partition column, or select only the columns you need. If the scan is intended, a person can raise the threshold in scanisaur.yaml.",
       "line": null,
       "column": null
@@ -31,10 +39,10 @@
     "proj.analytics.events"
   ],
   "estimate": {
-    "bytes_low": 346800783360,
-    "bytes_high": 346800783360,
+    "bytes_low": 2100000980992,
+    "bytes_high": 2100000980992,
     "confidence": "medium",
-    "usd_low": 1.9713,
-    "usd_high": 1.9713
+    "usd_low": 11.9371,
+    "usd_high": 11.9371
   }
 }

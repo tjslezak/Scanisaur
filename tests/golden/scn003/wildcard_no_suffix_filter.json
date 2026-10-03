@@ -9,6 +9,14 @@
       "fix": "Add a filter on `_TABLE_SUFFIX`, for example `_TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))`, or name fewer shards with a longer prefix.",
       "line": 2,
       "column": 22
+    },
+    {
+      "rule": "SCN010",
+      "severity": "warn",
+      "message": "The query would bill 378.6 GB, at or over the warn threshold of 100 GiB.",
+      "fix": "Read less: filter on the partition column, or select only the columns you need. If the scan is intended, a person can raise the threshold in scanisaur.yaml.",
+      "line": null,
+      "column": null
     }
   ],
   "tables": [

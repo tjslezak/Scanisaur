@@ -196,7 +196,7 @@
     SELECT COUNT(*) FROM `bigquery-public-data.pypi.file_downloads`
     WHERE DATE(timestamp) = '2026-09-28' AND LOWER(project) = 'requests'
 - id: pypi-no-partition-filter
-  expect: [SCN003]
+  expect: [SCN003, SCN010]
   sql: >-
     SELECT country_code, COUNT(*) AS n FROM `bigquery-public-data.pypi.file_downloads`
     WHERE project = 'requests' GROUP BY country_code

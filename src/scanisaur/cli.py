@@ -1,5 +1,6 @@
 """Command-line entry point."""
 
+import dataclasses
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -9,7 +10,8 @@ import typer
 
 from scanisaur import __version__
 from scanisaur.catalog.fixtures import FixtureError, load_catalog
-from scanisaur.engine.check import Policy, check
+from scanisaur.config import CONFIG_FILE, ConfigError, load_policy
+from scanisaur.engine.check import DEFAULT_POLICY, Policy, check
 from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Estimate, Verdict
 
@@ -70,6 +72,15 @@ def check_command(
     source: Annotated[
         str, typer.Argument(help="SQL file to check, or '-' to read standard input.")
     ] = "-",
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory, if there is one.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
     allow_writes: Annotated[
         bool, typer.Option("--allow-writes", help="Don't block write and DDL statements.")
     ] = False,
@@ -90,11 +101,14 @@ def check_command(
 ) -> None:
     """Check one BigQuery SQL statement.
 
+    The policy comes from the policy file; the flags below tighten or change it.
+
     Exit codes: 0 may run; 1 blocked (or warned, with --strict); 2 usage or input error.
     """
     try:
         loaded = load_catalog(catalog)
-    except FixtureError as error:
+        policy = _policy(config)
+    except (FixtureError, ConfigError) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
     try:
@@ -103,16 +117,23 @@ def check_command(
         typer.echo(f"error: {'standard input' if source == '-' else source}: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
 
-    policy = Policy(
-        read_only=not allow_writes,
-        fail_mode="closed" if fail_closed else "open",
-        price_per_tib=None if capacity_pricing else Policy().price_per_tib,
-    )
+    if allow_writes:
+        policy = dataclasses.replace(policy, read_only=False)
+    if fail_closed:
+        policy = dataclasses.replace(policy, fail_mode="closed")
+    if capacity_pricing:
+        policy = dataclasses.replace(policy, price_per_tib=None)
     result = check(sql, loaded, policy=policy)
     typer.echo(result.model_dump_json(indent=2) if as_json else _format(result))
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
+
+
+def _policy(config: Path | None) -> Policy:
+    if config is None and Path(CONFIG_FILE).is_file():
+        config = Path(CONFIG_FILE)
+    return DEFAULT_POLICY if config is None else load_policy(config)
 
 
 def _format(result: CheckResult) -> str:

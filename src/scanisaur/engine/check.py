@@ -6,7 +6,8 @@ import hashlib
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -34,6 +35,7 @@ from scanisaur.engine.rules import (
     UNANALYZABLE,
     WRITE_STATEMENT,
 )
+from scanisaur.engine.scan_threshold import scan_threshold_findings
 from scanisaur.engine.select_star import select_star_findings
 from scanisaur.engine.type_mismatch import type_mismatch_findings
 from scanisaur.engine.unbounded import unbounded_result_findings
@@ -53,6 +55,9 @@ _FINGERPRINT_DIGITS = 20
 _LEADING_TAG = re.compile(r"\A\s*/\*\s*scanisaur:[0-9a-z_]+\s*\*/")
 _TRAILING_TAG = re.compile(r"/\*\s*scanisaur:[0-9a-z_]+\s*\*/\s*\Z")
 
+#: A rule's severity set by policy, or "off" to drop its findings.
+RuleSetting = Literal["off", "info", "warn", "block"]
+
 
 @dataclass(frozen=True, slots=True)
 class Policy:
@@ -70,6 +75,12 @@ class Policy:
     #: SCN009 warns when a query returns at least this many rows of a table, every row it
     #: reads, with no LIMIT or aggregate.
     unbounded_result_rows: int = 10_000
+    #: SCN010 warns or blocks when the low end of the estimate reaches this many bytes
+    #: billed (docs/rules/scn010.md). None turns that level off.
+    warn_bytes: int | None = 100 * 2**30
+    block_bytes: int | None = 2**40
+    #: Severity overrides by rule ID, applied to every finding last.
+    rules: Mapping[str, RuleSetting] = field(default_factory=dict, hash=False)
 
 
 DEFAULT_POLICY = Policy()
@@ -98,6 +109,11 @@ def check(
         # default limit), so this is SQL that can't be analyzed, not SQL that is wrong.
         findings = [_unanalyzable(policy, _TOO_DEEP, _FLATTEN)]
         tables, cost = (), None
+    if cost is not None:
+        findings += scan_threshold_findings(
+            cost, warn_bytes=policy.warn_bytes, block_bytes=policy.block_bytes
+        )
+    findings = _overridden(findings, policy.rules)
     return CheckResult(
         check_id=check_id,
         tag=tag_for(sql),
@@ -202,6 +218,18 @@ def _rule_findings(
 
 def _ordered(findings: list[Finding]) -> list[Finding]:
     return sorted(findings, key=lambda f: (f.line or 0, f.column or 0, f.rule))
+
+
+def _overridden(findings: list[Finding], rules: Mapping[str, RuleSetting]) -> list[Finding]:
+    """Findings with the policy's per-rule severities; a rule set to "off" is dropped."""
+    out = []
+    for finding in findings:
+        setting = rules.get(finding.rule)
+        if setting is None:
+            out.append(finding)
+        elif setting != "off":
+            out.append(finding.model_copy(update={"severity": Severity(setting)}))
+    return out
 
 
 def _rejected(findings: list[Finding]) -> bool:

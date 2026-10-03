@@ -21,5 +21,23 @@ FAN_OUT = "SCN007"
 TYPE_MISMATCH = "SCN008"
 #: A query that returns every row of a large table: no LIMIT, aggregate or filter bounds it.
 UNBOUNDED_RESULT = "SCN009"
+#: The estimated bytes billed reach the policy's warn or block threshold.
+SCAN_THRESHOLD = "SCN010"
 #: A filter on a later cluster column with none on the leading one, so clustering helps little.
 CLUSTER_PREFIX = "SCN011"
+
+#: Every rule, in order. A policy can override the severity of any of them.
+ALL_RULES = (
+    UNANALYZABLE,
+    UNKNOWN_IDENTIFIER,
+    WRITE_STATEMENT,
+    PARTITION_FILTER,
+    PRUNING_DEFEATED,
+    SELECT_STAR,
+    CROSS_JOIN,
+    FAN_OUT,
+    TYPE_MISMATCH,
+    UNBOUNDED_RESULT,
+    SCAN_THRESHOLD,
+    CLUSTER_PREFIX,
+)

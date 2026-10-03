@@ -71,7 +71,7 @@ Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cros
 | `deps-struct-field` | 45.1 MB | 10.5 MB to 14.5 GB (medium) | 322.12 ** | none | none |
 | `pypi-one-day-one-project` | 842 MB | 10.5 MB to 100.6 GB (medium) | 119.46 ** | none | none |
 | `pypi-lower-project` | 98.5 GB | 100.6 GB (medium) | 1.02 | SCN004 | SCN004 |
-| `pypi-no-partition-filter` | 564.9 GB | 10.5 MB to 92.3 TB (medium) | 163.40 ** | SCN003 | SCN003 |
+| `pypi-no-partition-filter` | 564.9 GB | 10.5 MB to 92.3 TB (medium) | 163.40 ** | SCN003, SCN010 | SCN003, SCN010 |
 | `pypi-last-week` | 6 GB | 10.5 MB to 732.1 GB (medium) | 122.42 ** | none | none |
 | `pypi-first-week-of-month` | 5 GB | 10.5 MB to 593 GB (medium) | 119.57 ** | none | none |
 | `pypi-struct-field` | 1.2 GB | 10.5 MB to 163.1 GB (medium) | 134.34 ** | none | none |

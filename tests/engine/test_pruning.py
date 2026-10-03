@@ -21,18 +21,23 @@ from scanisaur.engine.rules import (
     CLUSTER_PREFIX,
     PARTITION_FILTER,
     PRUNING_DEFEATED,
+    SCAN_THRESHOLD,
     UNANALYZABLE,
 )
 
 CATALOG = load_catalog(Path(__file__).parents[1] / "golden" / "catalog.yaml")
+#: Without SCN010, which many of these full scans would add.
+NO_SCAN_THRESHOLD = Policy(rules={SCAN_THRESHOLD: "off"})
 
 
 def findings(sql: str, catalog: Catalog = CATALOG) -> list[tuple[str, str, str | None]]:
-    return [(f.rule, f.message, f.fix) for f in check(sql, catalog).findings]
+    return [
+        (f.rule, f.message, f.fix) for f in check(sql, catalog, policy=NO_SCAN_THRESHOLD).findings
+    ]
 
 
 def only_finding(sql: str, catalog: Catalog = CATALOG) -> tuple[str, str, str]:
-    (finding,) = check(sql, catalog).findings
+    (finding,) = check(sql, catalog, policy=NO_SCAN_THRESHOLD).findings
     assert finding.fix is not None
     return finding.rule, finding.message, finding.fix
 
