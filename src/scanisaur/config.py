@@ -19,6 +19,7 @@ loads, but nothing reads them yet.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -48,7 +49,8 @@ _UNITS = {
     "TIB": 2**40,
     "PIB": 2**50,
 }
-_SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*([A-Za-z]*)")
+#: A number, with an optional exponent (YAML reads ``1e11`` as a string), and a unit.
+_SIZE = re.compile(r"(\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*([A-Za-z]*)")
 
 
 class ConfigError(ScanisaurError, ValueError):
@@ -73,8 +75,9 @@ def parse_size(value: object) -> int | None:
     if isinstance(value, str) and (match := _SIZE.fullmatch(value.strip())):
         number, unit = match.groups()
         factor = _UNITS.get(unit.upper())
-        if factor is not None:
-            return round(float(number) * factor)
+        size = float(number) * (factor or 0)
+        if factor is not None and math.isfinite(size):
+            return round(size)
     raise ValueError(f"expected a size such as 100GiB, 1TB or a number of bytes, or off: {value!r}")
 
 

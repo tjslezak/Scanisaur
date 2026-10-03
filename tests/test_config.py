@@ -121,6 +121,9 @@ def test_missing_file(tmp_path: Path) -> None:
         ("1.5TB", 15 * 10**11),
         ("10 mb", 10**7),
         ("42", 42),
+        ("1e11", 10**11),
+        ("2.5e3 KB", 2_500_000),
+        ("1E+3", 1000),
         ("7 B", 7),
         ("off", None),
         (False, None),
@@ -131,7 +134,7 @@ def test_parse_size(value: object, size: int | None) -> None:
     assert parse_size(value) == size
 
 
-@pytest.mark.parametrize("value", ["", "GiB", "1 XB", "1.5e3", 1.5, [1]])
+@pytest.mark.parametrize("value", ["", "GiB", "1 XB", "1e", "e3", "1e400", 1.5, [1]])
 def test_parse_size_rejects(value: object) -> None:
     with pytest.raises(ValueError, match="expected a size"):
         parse_size(value)
@@ -145,3 +148,7 @@ def test_block_bytes_alone_under_the_default_warn(tmp_path: Path) -> None:
 @pytest.mark.parametrize("text", ["policy:\n  # read_only: true\n", "pricing:\n"])
 def test_empty_section_is_the_default(tmp_path: Path, text: str) -> None:
     assert _load(tmp_path, text) == DEFAULT_POLICY
+
+
+def test_exponent_from_yaml(tmp_path: Path) -> None:
+    assert _load(tmp_path, "policy: {warn_bytes: 1e11}").warn_bytes == 10**11
