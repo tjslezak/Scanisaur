@@ -59,7 +59,8 @@ def _repeating(
 ) -> tuple[str, frozenset[str]] | None:
     """A source that matches each row of ``start`` more than once, with the columns it is
     matched on. A source matched on a unique key passes the question on to its own
-    matches: each of its rows stands for one row of ``start``. One whose keys aren't
+    matches: each of its rows stands for one row of ``start``. So does one whose GROUP BY
+    columns complete a key: each group holds one of its rows. One whose keys aren't
     known stops the search there."""
     seen = {start}
     queue = deque([start])
@@ -72,7 +73,7 @@ def _repeating(
             if other in seen:
                 continue
             seen.add(other)
-            unique = _unique(sources[other], columns)
+            unique = _unique(sources[other], columns | keyed.grouped.get(other, frozenset()))
             if unique is False:
                 return other, columns
             if unique:

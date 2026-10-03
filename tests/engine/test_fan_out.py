@@ -273,3 +273,52 @@ def test_aggregate_inside_a_window(aggregate: str) -> None:
         "JOIN order_items i ON i.order_id = o.order_id GROUP BY o.user_id"
     )
     assert finding.message.startswith("`SUM(o.amount)` counts each row of `o`")
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        "i.id",
+        "o.order_id, i.id",
+        # An expression in GROUP BY doesn't take away what its plain columns give.
+        "i.id, o.amount + 1",
+        # Grouping completes a key the match leaves open: one line per order and line.
+        "l.line",
+    ],
+)
+def test_group_by_the_repeated_sides_key(group: str) -> None:
+    join = "lines l ON l.order_id" if group == "l.line" else "order_items i ON i.order_id"
+    sql = f"SELECT SUM(o.amount) FROM orders o JOIN {join} = o.order_id GROUP BY {group}"
+    assert fan_out(sql) == []
+
+
+@pytest.mark.parametrize(
+    "group",
+    ["o.user_id", "o.order_id", "ROLLUP (i.id)", "CUBE (i.id)", "GROUPING SETS ((i.id))"],
+)
+def test_group_by_that_leaves_repeats(group: str) -> None:
+    sql = (
+        "SELECT SUM(o.amount) FROM orders o JOIN order_items i ON i.order_id = o.order_id "
+        f"GROUP BY {group}"
+    )
+    (finding,) = fan_out(sql)
+    assert finding.message.startswith("`SUM(o.amount)` counts each row of `o` (orders)")
+
+
+def test_group_by_along_a_chain() -> None:
+    chain = (
+        "SELECT COUNT(u.id) FROM users u JOIN orders o ON o.user_id = u.id "
+        "JOIN order_items i ON i.order_id = o.order_id GROUP BY "
+    )
+    assert fan_out(chain + "o.order_id, i.id") == []
+    # One order per group, but its items still repeat it, and so the user.
+    (finding,) = fan_out(chain + "o.order_id")
+    assert "every row of `i` (order_items)" in finding.message
+
+
+def test_group_by_keeps_many_to_many() -> None:
+    (finding,) = fan_out(
+        "SELECT SUM(o.amount) FROM orders o JOIN order_items i ON i.user_id = o.user_id "
+        "GROUP BY o.order_id, i.id"
+    )
+    assert "a unique key of neither" in finding.message

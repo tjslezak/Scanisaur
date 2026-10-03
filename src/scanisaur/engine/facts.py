@@ -218,6 +218,9 @@ class KeyedJoin:
     sources: tuple[KeyedSource, ...]
     matches: tuple[KeyMatch, ...]
     aggregations: tuple[Aggregation, ...]
+    #: Each source's plain columns in the SELECT's GROUP BY. Within a group they hold one
+    #: value, so a source grouped on a key has at most one row per group.
+    grouped: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -629,6 +632,7 @@ class _Walk:
             sources=tuple(sources),
             matches=_key_matches(pairs, written),
             aggregations=tuple(_aggregations(select, members)),
+            grouped=_grouped_columns(select, members),
         )
 
     def _keyed_source(
@@ -833,6 +837,21 @@ def _key_matches(
         )
         for (a, b), (a_columns, b_columns, condition) in pairs.items()
     )
+
+
+def _grouped_columns(select: exp.Select, members: set[str]) -> dict[str, frozenset[str]]:
+    """Each source's plain columns in the GROUP BY. ROLLUP, CUBE and GROUPING SETS add
+    rows across groups, and GROUP BY ALL names no columns, so they give none."""
+    group = select.args.get("group")
+    if group is None or any(
+        isinstance(g, exp.Rollup | exp.Cube | exp.GroupingSets) for g in group.expressions
+    ):
+        return {}
+    grouped: dict[str, set[str]] = {}
+    for column in group.expressions:
+        if isinstance(column, exp.Column) and column.table in members:
+            grouped.setdefault(column.table, set()).add(column.name.lower())
+    return {alias: frozenset(columns) for alias, columns in grouped.items()}
 
 
 def _group_keys(select: exp.Select, group: exp.Group) -> tuple[frozenset[str], ...] | None:
