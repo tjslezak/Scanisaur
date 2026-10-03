@@ -192,3 +192,11 @@ class TestPolicyFile:
     def test_missing_config_is_a_usage_error(self, tmp_path: Path) -> None:
         result = run_check("--config", str(tmp_path / "none.yaml"), sql="SELECT 1")
         assert result.exit_code == EXIT_ERROR
+
+
+def test_serve_rejects_a_bad_catalog(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.yaml"
+    path.write_text("tables: nope\n", encoding="utf-8")
+    result = runner.invoke(app, ["serve", "--catalog", str(path)])
+    assert result.exit_code == EXIT_ERROR
+    assert "error:" in result.stderr

@@ -26,6 +26,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
+    "mcp>=2.3,<2.4",
     "pydantic>=2.10",
     "pyyaml>=6.0",
     "sqlglot>=30.21,<31",

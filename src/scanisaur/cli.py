@@ -9,6 +9,7 @@ import typer
 
 from scanisaur import __version__
 from scanisaur.catalog.fixtures import FixtureError, load_catalog
+from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, ConfigError, load_policy
 from scanisaur.engine.check import DEFAULT_POLICY, Policy, check
 from scanisaur.engine.result import CheckResult, Verdict
@@ -125,6 +126,41 @@ def check_command(
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
+
+
+@app.command("serve")
+def serve_command(
+    catalog: Annotated[
+        Path,
+        typer.Option(
+            "--catalog",
+            "-c",
+            help="Catalog fixture (YAML) to answer from.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory, if there is one.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+) -> None:
+    """Run the MCP server over standard input and output, for an MCP client to start."""
+    try:
+        source = FixtureSource(catalog)
+        policy = _policy(config)
+    except (FixtureError, ConfigError) as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    # Imported here: the MCP SDK takes about a second to import, and only serve needs it.
+    from scanisaur.server import build_server
+
+    build_server(source, policy).run("stdio")
 
 
 def _policy(config: Path | None) -> Policy:

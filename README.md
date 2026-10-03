@@ -11,13 +11,19 @@ Scanisaur never reads table data and never runs the queries it checks. The agent
 
 > **Status: pre-alpha.** Nothing is published yet. BigQuery is the first supported warehouse; Snowflake follows.
 
-## Planned MCP tools
+## MCP tools
 
 | Tool | Purpose |
 | --- | --- |
 | `scanisaur_schema_search` | Find relevant tables and columns by keyword |
 | `scanisaur_schema_describe` | Compact, token-efficient table descriptions with partition and cluster keys |
 | `scanisaur_check_sql` | Verdict (`pass`, `warn`, `block`), cost estimate, findings with fixes, and a tracking tag |
+
+`scanisaur serve` runs them over stdio for an MCP client to start. Until the warehouse connector lands, it answers from a YAML catalog:
+
+```bash
+uv run scanisaur serve --catalog tests/golden/catalog.yaml
+```
 
 ## Development
 
