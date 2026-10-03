@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, Literal
@@ -151,13 +152,29 @@ def position(node: exp.Expr) -> tuple[int | None, int | None]:
     return line, end_column
 
 
+class _QuietFilter(logging.Filter):
+    """Drops sqlglot's warnings on a thread while it parses here. Filtering per thread,
+    instead of raising the logger's level, can't leave the level stuck when checks run
+    concurrently, and doesn't hide warnings that other threads log meanwhile."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.quiet = threading.local()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.ERROR or not getattr(self.quiet, "on", False)
+
+
+_QUIET = _QuietFilter()
+logging.getLogger("sqlglot").addFilter(_QUIET)
+
+
 @contextmanager
 def _quiet_sqlglot() -> Iterator[None]:
     """sqlglot logs a warning when it falls back to a generic Command; findings say it instead."""
-    logger = logging.getLogger("sqlglot")
-    previous = logger.level
-    logger.setLevel(logging.ERROR)
+    previous = getattr(_QUIET.quiet, "on", False)
+    _QUIET.quiet.on = True
     try:
         yield
     finally:
-        logger.setLevel(previous)
+        _QUIET.quiet.on = previous
