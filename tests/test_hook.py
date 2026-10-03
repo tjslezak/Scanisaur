@@ -22,14 +22,13 @@ from scanisaur.hook import (
     CheckJson,
     FindingJson,
     adk_callback,
-    bq_queries,
     claude_output,
     cursor_output,
-    extract_sql,
     request_check,
     socket_path,
     worst,
 )
+from scanisaur.hook_sql import bq_queries, extract_sql
 from scanisaur.listener import hook_listener
 
 CATALOG = Path(__file__).parent / "golden" / "catalog.yaml"

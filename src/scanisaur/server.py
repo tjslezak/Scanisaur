@@ -20,7 +20,8 @@ from scanisaur import __version__, tools
 from scanisaur.catalog.source import CatalogSource, Snapshot
 from scanisaur.engine.check import Policy
 from scanisaur.engine.result import CheckResult
-from scanisaur.hook import CheckJson, claude_output, sql_from, worst
+from scanisaur.hook import CheckJson, claude_output, worst
+from scanisaur.hook_sql import sql_from
 from scanisaur.listener import hook_listener
 
 #: Sent when a client connects. The agent evaluation (#10) tunes these words.
