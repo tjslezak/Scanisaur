@@ -8,7 +8,7 @@ from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.engine import check as check_module
 from scanisaur.engine.check import Policy, check, fingerprint, new_check_id, tag_for
 from scanisaur.engine.resolve import ResolveError
-from scanisaur.engine.result import Severity, Verdict
+from scanisaur.engine.result import CheckResult, Finding, Severity, Verdict
 from scanisaur.engine.rules import UNANALYZABLE, UNKNOWN_IDENTIFIER, WRITE_STATEMENT
 
 CATALOG = load_catalog(Path(__file__).parents[1] / "golden" / "catalog.yaml")
@@ -208,6 +208,11 @@ class TestDefaults:
         assert result.verdict is Verdict.PASS
 
 
+def _unknown_names(result: CheckResult) -> list[Finding]:
+    """SCN001 findings only; cost rules may also warn about these queries."""
+    return [finding for finding in result.findings if finding.rule == UNKNOWN_IDENTIFIER]
+
+
 class TestUnnest:
     @pytest.mark.parametrize(
         "sql",
@@ -221,7 +226,7 @@ class TestUnnest:
         ],
     )
     def test_unknown_elements_stand_down(self, sql: str) -> None:
-        assert check(sql, CATALOG).verdict is Verdict.PASS
+        assert _unknown_names(check(sql, CATALOG)) == []
 
     @staticmethod
     def _catalog(type_: str) -> Catalog:
@@ -230,33 +235,34 @@ class TestUnnest:
 
     def test_unnamed_struct_fields_stand_down(self) -> None:
         catalog = self._catalog("ARRAY<STRUCT<INT64>>")
-        assert check("SELECT nope FROM t, UNNEST(xs)", catalog).verdict is Verdict.PASS
+        assert _unknown_names(check("SELECT nope FROM t, UNNEST(xs)", catalog)) == []
 
     def test_catalog_array_of_scalars_exposes_only_its_alias(self) -> None:
         catalog = self._catalog("ARRAY<STRING>")
-        (finding,) = check("SELECT x, nope FROM t, UNNEST(xs) AS x", catalog).findings
+        (finding,) = _unknown_names(check("SELECT x, nope FROM t, UNNEST(xs) AS x", catalog))
         assert finding.message == "Column `nope` does not exist in `proj.analytics.t` or `x`."
 
     def test_offset_without_alias_is_named_offset(self) -> None:
         sql = "SELECT key, offset FROM events, UNNEST(params) WITH OFFSET"
-        assert check(sql, CATALOG).verdict is Verdict.PASS
+        assert _unknown_names(check(sql, CATALOG)) == []
 
     def test_correlated_unnest_of_outer_column(self) -> None:
         sql = "SELECT (SELECT COUNT(*) FROM UNNEST(e.params) p WHERE p.kye = 'x') FROM events e"
-        (finding,) = check(sql, CATALOG).findings
+        (finding,) = _unknown_names(check(sql, CATALOG))
         assert finding.fix == "Did you mean `p.key`?"
 
     def test_field_in_two_unnests_is_ambiguous(self) -> None:
         sql = "SELECT key FROM events e, UNNEST(e.params) a, UNNEST(e.params) b"
-        (finding,) = check(sql, CATALOG).findings
+        (finding,) = _unknown_names(check(sql, CATALOG))
         assert finding.message == "Column `key` is ambiguous: it exists in `a`, `b`."
         assert finding.fix == "Qualify it, for example `a.key`."
 
     def test_wrong_alias_points_at_the_unnest_field(self) -> None:
         sql = "SELECT e.key FROM events e, UNNEST(e.params) AS p"
-        (finding,) = check(sql, CATALOG).findings
+        (finding,) = _unknown_names(check(sql, CATALOG))
         assert finding.fix == "Did you mean `p.key`?"
 
     def test_unknown_alias_lists_only_written_aliases(self) -> None:
-        (finding,) = check("SELECT q.key FROM events e, UNNEST(e.params) AS p", CATALOG).findings
+        sql = "SELECT q.key FROM events e, UNNEST(e.params) AS p"
+        (finding,) = _unknown_names(check(sql, CATALOG))
         assert finding.fix == "Use one of: `e`, `p`."
