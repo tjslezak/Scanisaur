@@ -5,8 +5,9 @@ import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated, TypeVar, assert_never
 
 import typer
 import yaml
@@ -183,10 +184,15 @@ gcloud auth application-default login --impersonate-service-account="$SA"
 """
 
 
+class WarehouseKind(StrEnum):
+    BIGQUERY = "bigquery"
+    DUCKDB = "duckdb"
+
+
 @app.command("init")
 def init_command(
     warehouse: Annotated[
-        str | None,
+        WarehouseKind | None,
         typer.Option(help="bigquery or duckdb. Asked for when left out."),
     ] = None,
     project: Annotated[str | None, typer.Option(help="BigQuery project.")] = None,
@@ -203,24 +209,27 @@ def init_command(
     if target.exists() and not force:
         typer.echo(f"error: {target} exists; add --force to overwrite it", err=True)
         raise typer.Exit(EXIT_ERROR)
-    kind = (warehouse or typer.prompt("Warehouse (bigquery or duckdb)", default="bigquery")).lower()
-    if kind == "duckdb":
-        path = path or typer.prompt("DuckDB database file")
-        section = f"  type: duckdb\n  path: {_quoted(path)}\n"
-    elif kind == "bigquery":
-        project = project or typer.prompt("BigQuery project")
-        location = location or typer.prompt("Location", default="US")
-        if dataset is None and warehouse is None:
-            answer = typer.prompt("Datasets, comma-separated (blank for all)", default="")
-            dataset = [d.strip() for d in answer.split(",") if d.strip()]
-        section = (
-            f"  type: bigquery\n  project: {_quoted(project)}\n  location: {_quoted(location)}\n"
-        )
-        if dataset:
-            section += f"  include_datasets: [{', '.join(_quoted(d) for d in dataset)}]\n"
-    else:
-        typer.echo(f"error: unknown warehouse {kind!r}; use bigquery or duckdb", err=True)
-        raise typer.Exit(EXIT_ERROR)
+    kind = warehouse or _warehouse_kind(
+        typer.prompt("Warehouse (bigquery or duckdb)", default="bigquery")
+    )
+    match kind:
+        case WarehouseKind.DUCKDB:
+            path = path or typer.prompt("DuckDB database file")
+            section = f"  type: duckdb\n  path: {_quoted(path)}\n"
+        case WarehouseKind.BIGQUERY:
+            project = project or typer.prompt("BigQuery project")
+            location = location or typer.prompt("Location", default="US")
+            if dataset is None and warehouse is None:
+                answer = typer.prompt("Datasets, comma-separated (blank for all)", default="")
+                dataset = [d.strip() for d in answer.split(",") if d.strip()]
+            section = (
+                f"  type: bigquery\n  project: {_quoted(project)}\n"
+                f"  location: {_quoted(location)}\n"
+            )
+            if dataset:
+                section += f"  include_datasets: [{', '.join(_quoted(d) for d in dataset)}]\n"
+        case _:
+            assert_never(kind)
     text = (
         f"warehouse:\n{section}"
         "cache:\n  ttl: 6h\n"
@@ -235,10 +244,19 @@ def init_command(
         raise typer.Exit(EXIT_ERROR) from error
     target.write_text(text, encoding="utf-8")
     typer.echo(f"wrote {target}")
-    if kind == "bigquery":
+    if kind is WarehouseKind.BIGQUERY:
         typer.echo("\nGive Scanisaur catalog-only access (metadata, never table data):\n")
         typer.echo(_GCLOUD.format(project=project))
     typer.echo("Then run `scanisaur doctor` to confirm access.")
+
+
+def _warehouse_kind(answer: str) -> WarehouseKind:
+    try:
+        return WarehouseKind(answer.strip().lower())
+    except ValueError as error:
+        raise typer.BadParameter(
+            f"{answer!r}; use bigquery or duckdb", param_hint="warehouse"
+        ) from error
 
 
 def _quoted(value: str) -> str:

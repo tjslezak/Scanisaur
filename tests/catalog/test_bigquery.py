@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 from google.api_core import exceptions as api_exceptions
@@ -111,11 +111,13 @@ def test_shards_become_a_family() -> None:
 
 
 class _Row:
-    def __init__(self, *values: object) -> None:
-        self._values = values
+    """A query row, read by column name like ``bigquery.Row``."""
 
-    def values(self) -> tuple[object, ...]:
-        return self._values
+    def __init__(self, row: NamedTuple) -> None:
+        self._fields = row._asdict()
+
+    def __getitem__(self, key: str) -> object:
+        return self._fields[key]
 
 
 class FakeClient:
@@ -150,7 +152,7 @@ class FakeClient:
 
     def query(self, sql: str, job_config: bigquery.QueryJobConfig) -> Any:
         self.queries.append(sql)
-        rows: Sequence[tuple[object, ...]]
+        rows: Sequence[NamedTuple]
         if self.metadata_denied:
             raise api_exceptions.Forbidden("Access Denied: INFORMATION_SCHEMA")  # type: ignore[no-untyped-call]
         if sql.strip().endswith("LIMIT 1"):
@@ -169,7 +171,7 @@ class FakeClient:
             rows = ROWS.keys
         else:
             raise AssertionError(sql)
-        return _Job([_Row(*row) for row in rows])
+        return _Job([_Row(row) for row in rows])
 
     def get_table(self, name: str) -> bigquery.Table:
         if not name.endswith(".orders"):

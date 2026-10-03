@@ -26,7 +26,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypeVar
 
 import google.auth.exceptions
 from google.api_core import exceptions as api_exceptions
@@ -60,7 +60,12 @@ _KINDS: dict[str, TableKind] = {
     "SNAPSHOT": "TABLE",
     "CLONE": "TABLE",
 }
-_GRANULARITIES: frozenset[str] = frozenset({"HOUR", "DAY", "MONTH", "YEAR"})
+_GRANULARITIES: dict[str, Granularity] = {
+    "HOUR": "HOUR",
+    "DAY": "DAY",
+    "MONTH": "MONTH",
+    "YEAR": "YEAR",
+}
 
 
 class ColumnRow(NamedTuple):
@@ -180,8 +185,8 @@ def _partitioning(
     columns: Iterable[ColumnRow], granularity: str | None, required: bool
 ) -> Partitioning | None:
     column = next((c.column for c in columns if c.partitioning), None)
-    if granularity in _GRANULARITIES:
-        unit: Granularity = granularity  # type: ignore[assignment]
+    unit = _GRANULARITIES.get(granularity or "")
+    if unit is not None:
         return Partitioning(column, unit, required)  # column None: ingestion time
     if column is not None:
         return Partitioning(column, "RANGE", required)  # integer-range partitioning
@@ -253,7 +258,7 @@ class BigQueryConnector:
 
     @property
     def name(self) -> str:
-        return f"bigquery:{self._warehouse.project}:{self._warehouse.location}"
+        return self._warehouse.name
 
     @property
     def client(self) -> bigquery.Client:
@@ -364,9 +369,10 @@ class BigQueryConnector:
 
     def _columns(self) -> Iterator[ColumnRow]:
         sql = f"""
-            SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
-                   IFNULL(p.description, ''), c.is_partitioning_column = 'YES',
-                   c.clustering_ordinal_position
+            SELECT c.table_schema AS dataset, c.table_name AS table, c.column_name AS column,
+                   c.data_type AS type, IFNULL(p.description, '') AS description,
+                   c.is_partitioning_column = 'YES' AS partitioning,
+                   c.clustering_ordinal_position AS cluster_position
             FROM {self._region("COLUMNS")} AS c
             LEFT JOIN {self._region("COLUMN_FIELD_PATHS")} AS p
               ON p.table_schema = c.table_schema AND p.table_name = c.table_name
@@ -374,15 +380,16 @@ class BigQueryConnector:
             WHERE c.is_hidden = 'NO'
             ORDER BY c.table_schema, c.table_name, c.ordinal_position
         """
-        return (ColumnRow(*row.values()) for row in self._query(sql))
+        return (_row(ColumnRow, row) for row in self._query(sql))
 
     def _options(self) -> Iterator[OptionRow]:
         sql = f"""
-            SELECT table_schema, table_name, option_name, option_value
+            SELECT table_schema AS dataset, table_name AS table, option_name AS name,
+                   option_value AS value
             FROM {self._region("TABLE_OPTIONS")}
             WHERE option_name IN ('require_partition_filter', 'description')
         """
-        return (OptionRow(*row.values()) for row in self._query(sql))
+        return (_row(OptionRow, row) for row in self._query(sql))
 
     def _listing(self, datasets: Sequence[str]) -> Iterator[ListingRow]:
         for dataset in datasets:
@@ -398,24 +405,26 @@ class BigQueryConnector:
     def _sizes(self, datasets: Sequence[str]) -> Iterator[SizeRow]:
         project = self._warehouse.project
         sql = " UNION ALL ".join(
-            f"SELECT dataset_id, table_id, row_count, size_bytes, last_modified_time"
+            f"SELECT dataset_id AS dataset, table_id AS table, row_count AS rows,"
+            f" size_bytes AS bytes, last_modified_time AS last_modified"
             f" FROM `{project}`.`{d}`.__TABLES__"
             for d in datasets
         )
-        return (SizeRow(*row.values()) for row in self._query(sql))
+        return (_row(SizeRow, row) for row in self._query(sql))
 
     def _declared_keys(self, datasets: Sequence[str]) -> Iterator[KeyRow]:
         project = self._warehouse.project
         sql = " UNION ALL ".join(
-            f"""SELECT k.table_schema, k.table_name, k.constraint_name, k.column_name,
-                       k.ordinal_position
+            f"""SELECT k.table_schema AS dataset, k.table_name AS table,
+                       k.constraint_name AS constraint, k.column_name AS column,
+                       k.ordinal_position AS position
                 FROM `{project}`.`{d}`.INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS k
                 JOIN `{project}`.`{d}`.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS t
                   USING (constraint_name)
                 WHERE t.constraint_type = 'PRIMARY KEY'"""
             for d in datasets
         )
-        return (KeyRow(*row.values()) for row in self._query(sql))
+        return (_row(KeyRow, row) for row in self._query(sql))
 
     def _partitions(self, rows: Rows) -> Iterator[PartitionRow]:
         partitioned = {(r.dataset, r.table) for r in rows.columns if r.partitioning} | {
@@ -429,12 +438,13 @@ class BigQueryConnector:
         project = self._warehouse.project
         for dataset, tables in sorted(large.items()):
             sql = f"""
-                SELECT table_schema, table_name, partition_id, total_logical_bytes
+                SELECT table_schema AS dataset, table_name AS table, partition_id,
+                       total_logical_bytes AS bytes
                 FROM `{project}`.`{dataset}`.INFORMATION_SCHEMA.PARTITIONS
                 WHERE table_name IN UNNEST(@tables) AND total_logical_bytes IS NOT NULL
             """
             parameters = [bigquery.ArrayQueryParameter("tables", "STRING", sorted(tables))]
-            yield from (PartitionRow(*row.values()) for row in self._query(sql, parameters))
+            yield from (_row(PartitionRow, row) for row in self._query(sql, parameters))
 
     def _query(
         self, sql: str, parameters: Sequence[bigquery.ArrayQueryParameter] = ()
@@ -445,14 +455,23 @@ class BigQueryConnector:
         return iter(self.client.query(sql, job_config=config).result())
 
 
+_R = TypeVar("_R", ColumnRow, OptionRow, SizeRow, KeyRow, PartitionRow)
+
+
+def _row(kind: type[_R], row: Any) -> _R:
+    """A query row as ``kind``, by column name: the SQL aliases each column to a field."""
+    return kind._make(row[field] for field in kind._fields)
+
+
 def _from_api(table: bigquery.Table) -> Table:
     """One table from ``tables.get``. Partition sizes are left out."""
     fields = table.schema or []
     time = table.time_partitioning
     range_ = table.range_partitioning
     partitioning = None
-    if time is not None and time.type_ in _GRANULARITIES:
-        partitioning = Partitioning(time.field, time.type_, bool(table.require_partition_filter))
+    unit = _GRANULARITIES.get(time.type_ or "") if time is not None else None
+    if time is not None and unit is not None:
+        partitioning = Partitioning(time.field, unit, bool(table.require_partition_filter))
     elif range_ is not None:
         partitioning = Partitioning(range_.field, "RANGE", bool(table.require_partition_filter))
     return Table(

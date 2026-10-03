@@ -149,3 +149,16 @@ def test_load_10k_tables(tmp_path: Path) -> None:
     assert loaded is not None
     assert len(loaded.catalog.tables) == 10_000
     print(f"loaded 10,000 tables in {elapsed * 1000:.0f} ms")
+
+
+def test_unreadable_row_discards_the_cache(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cache = MetadataCache(tmp_path / "c.sqlite")
+    cache.save(Catalog((_table("orders", "id"),)), warehouse="w")
+    with sqlite3.connect(cache.path) as db:
+        db.execute("UPDATE tables SET body = '{\"name\": 1}'")
+    db.close()
+    assert cache.load() is None
+    assert "can't read" in caplog.text
+    assert cache.load() is None  # rebuilt empty, so the next use refetches

@@ -8,6 +8,7 @@ version of this module is emptied and refetched.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -15,7 +16,7 @@ from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from scanisaur.catalog.model import Catalog, Table
 from scanisaur.catalog.source import SearchHit, Snapshot
@@ -25,6 +26,7 @@ from scanisaur.errors import ScanisaurError
 SCHEMA_VERSION = 1
 
 _TABLE_JSON = TypeAdapter(Table)
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE snapshots (
@@ -75,7 +77,13 @@ class MetadataCache:
             bodies = db.execute(
                 "SELECT body FROM tables WHERE snapshot_id = ?", (snapshot_id,)
             ).fetchall()
-        tables = tuple(_TABLE_JSON.validate_json(body) for (body,) in bodies)
+        try:
+            tables = tuple(_TABLE_JSON.validate_json(body) for (body,) in bodies)
+        except ValidationError as error:
+            logger.warning("%s: discarding a cache this version can't read: %s", self.path, error)
+            with self._connect() as db:
+                _rebuild(db)
+            return None
         return Snapshot(
             catalog=Catalog(tables, default_project=project, default_dataset=dataset),
             snapshot_id=str(snapshot_id),
@@ -97,7 +105,8 @@ class MetadataCache:
                 ),
             )
             snapshot_id = cursor.lastrowid
-            assert snapshot_id is not None
+            if snapshot_id is None:
+                raise CacheError(f"{self.path}: the snapshot wasn't saved")
             for table in catalog.tables:
                 self._insert(db, snapshot_id, table)
             db.execute("DELETE FROM snapshots WHERE id < ?", (snapshot_id,))

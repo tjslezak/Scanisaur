@@ -7,7 +7,7 @@ from scanisaur.catalog import Catalog, Column, Table
 from scanisaur.catalog.cache import MetadataCache
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import ConnectorError, Probe
-from scanisaur.config import CacheSettings, Config, ConfigError
+from scanisaur.config import CacheSettings, Config, ConfigError, DuckDBWarehouse
 
 
 class FakeConnector:
@@ -157,3 +157,19 @@ def test_unparsable_sql_is_left_to_check(tmp_path: Path, connector: FakeConnecto
     source.snapshot_for("SELECT FROM WHERE (")
     source.snapshot_for("DROP TABLE x")
     assert connector.lookups == []
+
+
+def test_fresh_cache_never_connects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, connector: FakeConnector
+) -> None:
+    config = Config(
+        warehouse=DuckDBWarehouse(type="duckdb", path=tmp_path / "w.duckdb"),
+        cache=CacheSettings(path=tmp_path / "c.sqlite"),
+    )
+    MetadataCache(tmp_path / "c.sqlite").save(connector.fetch_catalog(), warehouse="w")
+
+    def refuse(_: object) -> None:
+        raise AssertionError("connected")
+
+    monkeypatch.setattr("scanisaur.catalog.cached.connect", refuse)
+    assert CachedSource(config).current().catalog.find("orders", "d") is not None

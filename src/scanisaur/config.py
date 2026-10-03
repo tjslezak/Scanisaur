@@ -155,6 +155,11 @@ class BigQueryWarehouse(_Spec):
     include_datasets: tuple[str, ...] = ()
     exclude_datasets: tuple[str, ...] = ()
 
+    @property
+    def name(self) -> str:
+        """This warehouse's identity, which keys its metadata cache."""
+        return f"bigquery:{self.project}:{self.location}"
+
 
 class DuckDBWarehouse(_Spec):
     """A DuckDB database file, opened read-only. Relative paths are from the config file."""
@@ -163,6 +168,11 @@ class DuckDBWarehouse(_Spec):
     path: Path
     include_datasets: tuple[str, ...] = ()
     exclude_datasets: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        """This warehouse's identity, which keys its metadata cache."""
+        return f"duckdb:{self.path.resolve()}"
 
 
 Warehouse = Annotated[BigQueryWarehouse | DuckDBWarehouse, Field(discriminator="type")]

@@ -350,5 +350,10 @@ class TestInit:
 
     def test_unknown_warehouse(self) -> None:
         result = runner.invoke(app, ["init", "--warehouse", "snowflake"])
-        assert result.exit_code == EXIT_ERROR
+        assert result.exit_code == 2  # a usage error, from the option's choices
+        assert "'snowflake' is not one of" in result.stderr
+
+    def test_unknown_warehouse_answer(self) -> None:
+        result = runner.invoke(app, ["init"], input="snowflake\n")
+        assert result.exit_code == 2
         assert "use bigquery or duckdb" in result.stderr

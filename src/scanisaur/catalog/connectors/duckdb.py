@@ -44,11 +44,14 @@ class DuckDBConnector:
 
     @property
     def name(self) -> str:
-        return f"duckdb:{self._warehouse.path.resolve()}"
+        return self._warehouse.name
 
     def fetch_catalog(self) -> Catalog:
         with self._connect() as db:
-            project, dataset = db.execute("SELECT current_database(), current_schema()").fetchone()  # type: ignore[misc]
+            row = db.execute("SELECT current_database(), current_schema()").fetchone()
+            if row is None:
+                raise ConnectorError(f"{self._warehouse.path}: no current database")
+            project, dataset = row
             tables = self._tables(db)
         return Catalog(tables, default_project=project, default_dataset=dataset)
 

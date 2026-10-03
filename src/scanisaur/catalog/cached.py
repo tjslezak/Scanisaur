@@ -43,7 +43,9 @@ class CachedSource:
             raise ConfigError("scanisaur.yaml names no warehouse")
         self._config = config
         self._connector = connector
-        self._cache = cache or MetadataCache(_cache_path(config, self.connector.name))
+        # Named from config, so a fresh cache never imports the warehouse driver.
+        name = config.warehouse.name if config.warehouse else self.connector.name
+        self._cache = cache or MetadataCache(_cache_path(config, name))
         self._now = now
         self._snapshot: Snapshot | None = None
 
