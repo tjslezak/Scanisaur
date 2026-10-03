@@ -15,7 +15,8 @@ The unit is the leaf field: BigQuery bills ``device.category`` without the rest 
   anything up to all of it.
 - **Clustering:** a filter on a cluster column may skip blocks that metadata can't see, so
   the table's estimate is an upper bound.
-- **Minimum:** each table read is billed at least 10 MB.
+- **Minimum:** each table is billed at least 10 MiB once the query bills anything, even a
+  table it reads no columns of or prunes to no partitions. A self-join is one table.
 """
 
 from __future__ import annotations
@@ -131,7 +132,7 @@ def estimate(
         free = None if price_per_tib is None else 0.0
         return Estimate(bytes_low=0, bytes_high=0, confidence="high", usd_low=free, usd_high=free)
     now = _naive_utc(now)
-    low = high = 0
+    low = high = free = 0
     confidence: Confidence = "high"
     for name, references in by_table.items():
         result = _table_estimate(references, now)
@@ -141,8 +142,14 @@ def estimate(
         if name in sampled and table_high:
             table_low = MIN_BILLED_BYTES
             table_confidence = "low"
+        free += not table_high
         low, high = low + table_low, high + table_high
         confidence = min(confidence, table_confidence, key=_RANK.__getitem__)
+    if high:
+        # Measured (#26): once a query bills anything, each table it references is billed
+        # its minimum, even one it reads no columns of or prunes to no partitions. A query
+        # that bills nothing, such as `SELECT COUNT(*)` on one table, stays free.
+        low, high = low + free * MIN_BILLED_BYTES, high + free * MIN_BILLED_BYTES
     usd_low = usd_high = None
     if price_per_tib is not None:
         usd_low = round(low / _TIB * price_per_tib, 4)
