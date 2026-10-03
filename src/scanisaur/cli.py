@@ -21,6 +21,7 @@ from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config, load_config_text
 from scanisaur.engine.check import check
 from scanisaur.engine.result import CheckResult, Verdict
+from scanisaur.engine.pruning import format_bytes
 from scanisaur.errors import ScanisaurError
 from scanisaur.hook import main as hook_main
 from scanisaur.hook import policy_file, socket_path
