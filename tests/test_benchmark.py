@@ -29,6 +29,12 @@ class TestQueries:
         with pytest.raises(ValueError, match="more than once"):
             run.load_queries(path)
 
+    def test_missing_sql_names_the_query(self, tmp_path: Path) -> None:
+        path = tmp_path / "queries.yaml"
+        path.write_text("- {id: a}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="query a needs a string id and sql"):
+            run.load_queries(path)
+
 
 class TestDryRunOutput:
     def test_json_job(self) -> None:

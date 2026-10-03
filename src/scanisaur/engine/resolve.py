@@ -22,6 +22,7 @@ from scanisaur.catalog.model import PARTITIONDATE, PARTITIONTIME, TABLE_SUFFIX, 
 from scanisaur.engine.parse import position
 from scanisaur.engine.result import Finding, Severity
 from scanisaur.engine.rules import UNKNOWN_IDENTIFIER
+from scanisaur.errors import ScanisaurError
 
 #: Where each BigQuery pseudo-column exists, and what to do instead.
 _PSEUDO_HOMES = {
@@ -62,7 +63,7 @@ if not {_STAR_EXCEPT, _STAR_REPLACE} <= set(exp.Star.arg_types):  # pragma: no c
     raise ImportError("unsupported sqlglot version: exp.Star lacks except_ or replace")
 
 
-class ResolveError(Exception):
+class ResolveError(ScanisaurError):
     """sqlglot failed for a reason that isn't an unknown name."""
 
 

@@ -27,6 +27,7 @@ from sqlglot.optimizer.scope import Scope, find_all_in_scope, traverse_scope
 from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, position, resolvable
 from scanisaur.engine.resolve import Resolution, ResolveError, TableKey, resolve, stars_of
+from scanisaur.errors import ScanisaurError
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
 Clause = Literal["where", "on", "having", "qualify"]
@@ -64,7 +65,7 @@ _NULL_TOLERANT = (exp.Coalesce, exp.If, exp.Case, exp.Is)
 _PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-class FactsError(ValueError):
+class FactsError(ScanisaurError, ValueError):
     """The statement can't be described: it doesn't parse, resolve, or read anything."""
 
 
