@@ -139,6 +139,7 @@ _Visible = list[dict[str, _Source]]
 def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     tree = tree.copy()  # names are respelled and completed in place below
     _match_cte_case(tree)
+    _name_unnests(tree)
     try:
         references = [node for scope in traverse_scope(tree) for node in _table_nodes(scope)]
     except SqlglotError as error:
@@ -276,6 +277,15 @@ def _record_stars(tree: exp.Expr) -> None:
             )
         if stars:
             select.meta[_STARS] = tuple(stars)
+
+
+def _name_unnests(tree: exp.Expr) -> None:
+    """Name each UNNEST written without an alias. sqlglot's scopes give them all the same empty
+    name, so two in one FROM fail with "Alias already used". The names have no position
+    in the SQL, and messages never show them."""
+    for index, unnest in enumerate(tree.find_all(exp.Unnest)):
+        if unnest.args.get("alias") is None and isinstance(unnest.parent, exp.From | exp.Join):
+            unnest.set("alias", exp.TableAlias(this=exp.to_identifier(f"_unnest{index}")))
 
 
 def _complete_name(node: exp.Table, table: Table) -> None:
