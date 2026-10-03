@@ -38,6 +38,8 @@ from scanisaur.engine.select_star import select_star_findings
 #: Fixes for SQL that can't be analyzed.
 _SEND_ONE = "Send one complete SQL query."
 _BY_HAND = "Check the table and column names by hand before running it."
+_TOO_DEEP = "The SQL is nested too deeply to analyze."
+_FLATTEN = "Move nested subqueries into WITH clauses, or nest fewer expressions."
 
 #: Crockford base32, lowercase: sortable and unambiguous to read aloud.
 _ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
@@ -78,11 +80,18 @@ def check(
     """``now`` evaluates ``CURRENT_DATE()`` and the like in the cost estimate."""
     check_id = check_id or new_check_id()
     now = now or datetime.now(UTC)
-    findings, tables, analyzed = _analyze(sql, catalog, policy, now)
     cost: Estimate | None = None
-    if analyzed is not None and not _rejected(findings) and not _unseen_reads(analyzed[0]):
-        resolution, facts = analyzed
-        cost = estimate(facts, now, policy.price_per_tib, _sampled(resolution))
+    try:
+        findings, tables, analyzed = _analyze(sql, catalog, policy, now)
+        if analyzed is not None and not _rejected(findings) and not _unseen_reads(analyzed[0]):
+            resolution, facts = analyzed
+            cost = estimate(facts, now, policy.price_per_tib, _sampled(resolution))
+    except RecursionError:
+        # sqlglot and the rules walk the tree recursively. BigQuery accepts SQL nested
+        # deeper than Python's stack allows (about 46 parentheses or 51 CASEs at the
+        # default limit), so this is SQL that can't be analyzed, not SQL that is wrong.
+        findings = [_unanalyzable(policy, _TOO_DEEP, _FLATTEN)]
+        tables, cost = (), None
     return CheckResult(
         check_id=check_id,
         tag=tag_for(sql),
