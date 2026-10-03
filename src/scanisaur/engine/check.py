@@ -16,6 +16,7 @@ from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.cross_join import cross_join_findings
 from scanisaur.engine.estimate import estimate
 from scanisaur.engine.facts import FactsError, QueryFacts, TooComplexError, extract
+from scanisaur.engine.fan_out import fan_out_findings
 from scanisaur.engine.parse import (
     DIALECT,
     SqlParseError,
@@ -141,7 +142,7 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy, now: datetime) -> _Anal
 def _rule_findings(
     resolution: Resolution, policy: Policy, now: datetime
 ) -> tuple[list[Finding], QueryFacts | None]:
-    """Findings from the rules that read per-table facts (SCN003 to SCN006, SCN011), and
+    """Findings from the rules that read per-table facts (SCN003 to SCN007, SCN011), and
     the facts for the cost estimate."""
     try:
         facts = extract(resolution)
@@ -167,7 +168,10 @@ def _rule_findings(
         block_pairs=policy.cross_join_block_pairs,
         sampled=_sampled(resolution),
     )
-    findings = sorted([*pruning, *star, *cross], key=lambda f: (f.line or 0, f.column or 0, f.rule))
+    fan_out = fan_out_findings(facts)
+    findings = sorted(
+        [*pruning, *star, *cross, *fan_out], key=lambda f: (f.line or 0, f.column or 0, f.rule)
+    )
     return findings, facts
 
 

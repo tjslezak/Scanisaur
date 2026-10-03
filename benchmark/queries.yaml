@@ -1,6 +1,6 @@
 # Queries for the dry-run benchmark (issue #10). Each is dry-run against BigQuery and
 # checked by Scanisaur. `expect` lists the rules that should fire, from SCN003, SCN004,
-# SCN005, SCN006 and SCN011; an empty list means the query should pass. Traps and their fixes
+# SCN005, SCN006, SCN007 and SCN011; an empty list means the query should pass. Traps and their fixes
 # come in pairs, after the patterns in issue #10.
 #
 # Rolling tables (Trends, deps.dev, PyPI) are queried at fixed days they keep, or
@@ -301,6 +301,49 @@
   sql: >-
     SELECT SUM(e.sequence_number * u.age) FROM `bigquery-public-data.thelook_ecommerce.events` AS e
     CROSS JOIN `bigquery-public-data.thelook_ecommerce.users` AS u
+
+# Joins on columns that aren't a unique key, which repeat rows a sum or count then counts
+# again (SCN007). thelook declares no keys; tables.yaml gives them.
+- id: thelook-items-ordered-repeated
+  expect: [SCN007]
+  sql: >-
+    SELECT SUM(o.num_of_item) AS items FROM `bigquery-public-data.thelook_ecommerce.orders` AS o
+    JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS i ON i.order_id = o.order_id WHERE i.status = 'Complete'
+- id: thelook-items-ordered
+  sql: >-
+    SELECT SUM(o.num_of_item) AS items FROM `bigquery-public-data.thelook_ecommerce.orders` AS o
+    WHERE o.order_id IN (SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.order_items` WHERE status = 'Complete')
+- id: thelook-orders-counted-per-item
+  expect: [SCN007]
+  sql: >-
+    SELECT u.country, COUNT(o.order_id) AS orders FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o ON o.user_id = u.id
+    JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS i ON i.order_id = o.order_id
+    WHERE i.sale_price > 100 GROUP BY u.country
+- id: thelook-orders-counted-distinct
+  sql: >-
+    SELECT u.country, COUNT(DISTINCT o.order_id) AS orders FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o ON o.user_id = u.id
+    JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS i ON i.order_id = o.order_id
+    WHERE i.sale_price > 100 GROUP BY u.country
+- id: thelook-age-weighted-by-events
+  expect: [SCN007]
+  sql: >-
+    SELECT AVG(u.age) AS average_age FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    JOIN `bigquery-public-data.thelook_ecommerce.events` AS e ON e.user_id = u.id WHERE e.event_type = 'purchase'
+- id: thelook-age-of-buyers
+  sql: >-
+    SELECT AVG(u.age) AS average_age FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    WHERE u.id IN (SELECT user_id FROM `bigquery-public-data.thelook_ecommerce.events` WHERE event_type = 'purchase')
+- id: thelook-items-joined-on-user
+  expect: [SCN007]
+  sql: >-
+    SELECT o.order_id, i.product_id FROM `bigquery-public-data.thelook_ecommerce.orders` AS o
+    JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS i ON i.user_id = o.user_id
+- id: thelook-items-joined-on-order
+  sql: >-
+    SELECT o.order_id, i.product_id FROM `bigquery-public-data.thelook_ecommerce.orders` AS o
+    JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS i ON i.order_id = o.order_id
 
 # Mixes: a required and an optional table in one query.
 - id: mix-trending-articles

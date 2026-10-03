@@ -167,6 +167,59 @@ class Product:
     limit: int | None = None
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KeyedSource:
+    """A table, CTE or subquery that a SELECT matches to another by equal columns."""
+
+    alias: str
+    #: The catalog table's name; None for a CTE or subquery.
+    table: str | None
+    #: Its columns, or a CTE or subquery's output columns.
+    columns: frozenset[str]
+    #: Sets of columns unique in it; None when that isn't known.
+    keys: tuple[frozenset[str], ...] | None
+    #: Columns this SELECT compares with one value, as ``i.status = 'Complete'``. They
+    #: count toward a key: ``(order_id, line)`` is unique per order when ``line = 1``.
+    fixed: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KeyMatch:
+    """The equalities in WHERE and ON between the columns of two sources."""
+
+    left: str
+    right: str
+    #: The columns of each side the equalities compare.
+    left_columns: frozenset[str]
+    right_columns: frozenset[str]
+    #: The first such equality, as written.
+    condition: str
+    #: Where the later of the two sources is written.
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Aggregation:
+    """``SUM``, ``AVG``, ``COUNT`` or ``COUNTIF`` of one source's columns, without
+    ``DISTINCT``: each of its rows counts as many times as the join repeats it."""
+
+    sql: str
+    #: SUM, AVG, COUNT or COUNTIF.
+    function: str
+    source: str
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KeyedJoin:
+    """A SELECT that matches sources by equal columns, for SCN007: when the columns
+    matched aren't a unique key of a side, each row of the other repeats once per match."""
+
+    sources: tuple[KeyedSource, ...]
+    matches: tuple[KeyMatch, ...]
+    aggregations: tuple[Aggregation, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class QueryFacts:
     tables: tuple[TableFacts, ...]
@@ -174,6 +227,7 @@ class QueryFacts:
     outer_limit: int | None
     outer_aggregated: bool
     products: tuple[Product, ...] = ()
+    keyed_joins: tuple[KeyedJoin, ...] = ()
 
 
 def facts_from_sql(sql: str, catalog: Catalog) -> QueryFacts:
@@ -210,7 +264,8 @@ def extract(resolution: Resolution) -> QueryFacts:
     # Visits of one SELECT give equal products; separate SELECTs, such as two UNION
     # branches alike, stay apart by where they are written.
     products = tuple({(p, p.position): p for p in walk.products}.values())
-    return QueryFacts(walk.table_facts(), tuple(walk.joins), limit, aggregated, products)
+    keyed = tuple(walk.keyed_joins)  # one per SELECT, however often it is visited
+    return QueryFacts(walk.table_facts(), tuple(walk.joins), limit, aggregated, products, keyed)
 
 
 class _Pushed(NamedTuple):
@@ -285,6 +340,8 @@ class _Walk:
         self._unnest_fields_seen: dict[tuple[int, object], frozenset[tuple[str, ...]] | None] = {}
         self.joins: list[Join] = []
         self.products: list[Product] = []
+        self.keyed_joins: list[KeyedJoin] = []
+        self._keys: dict[int, tuple[frozenset[str], ...] | None] = {}
         self._schedule(scopes[-1], None, (), 1)
 
     def run(self) -> None:
@@ -486,6 +543,9 @@ class _Walk:
         if id(scope) not in self._joined:
             self._joined.add(id(scope))
             self.joins.extend(_joins(scope, select, tables))
+            keyed = self._keyed_join(scope, select, tables, derived, positions)
+            if keyed is not None:
+                self.keyed_joins.append(keyed)
 
         for alias, source in derived.items():
             links = linked.of(alias)
@@ -540,6 +600,135 @@ class _Walk:
                 skipped = _skipped_columns(scope.expression, _needed_by(scope))
             self._unnest_fields_seen[key] = _element_fields(unnest, scope, alias, skipped)
         return self._unnest_fields_seen[key]
+
+    def _keyed_join(
+        self,
+        scope: Scope,
+        select: exp.Select,
+        tables: Mapping[str, Table],
+        derived: Mapping[str, Scope],
+        positions: Mapping[str, tuple[int | None, int | None]],
+    ) -> KeyedJoin | None:
+        """The equalities between this SELECT's sources, what is unique in each, and the
+        aggregates that would count a source's rows once per match."""
+        members = {*tables, *derived}
+        if len(members) < 2:
+            return None
+        written = dict(positions)
+        for alias in derived:
+            written[alias] = _written_at(scope.selected_sources[alias][0])
+        pairs: dict[tuple[str, str], tuple[set[str], set[str], exp.Expr]] = {}
+        fixed: dict[str, set[str]] = {alias: set() for alias in members}
+        for condition in _join_conditions(select):
+            if not isinstance(condition, exp.EQ):
+                continue
+            left, right = _bare_column(condition.left), _bare_column(condition.right)
+            if left is not None and right is not None:
+                if left.table in members and right.table in members and left.table != right.table:
+                    a, b = sorted((left, right), key=lambda c: _sort_key(written[c.table]))
+                    found = pairs.setdefault((a.table, b.table), (set(), set(), condition))
+                    found[0].add(a.name.lower())
+                    found[1].add(b.name.lower())
+                continue
+            for column, other in ((left, condition.right), (right, condition.left)):
+                if column is not None and column.table in members and _is_constant(other):
+                    fixed[column.table].add(column.name.lower())
+        if not pairs:
+            return None
+        sources = []
+        for alias in members:
+            table = tables.get(alias)
+            if table is not None:
+                columns = frozenset(c.name.lower() for c in table.columns)
+                keys = _lowered(table.keys)
+            else:
+                columns = frozenset(self._output_names(derived[alias].expression))
+                keys = self._source_keys(derived[alias])
+            sources.append(
+                KeyedSource(
+                    alias=alias,
+                    table=table.name if table is not None else None,
+                    columns=columns,
+                    keys=keys,
+                    fixed=frozenset(fixed[alias]),
+                )
+            )
+        order = list(scope.selected_sources)
+        sources.sort(key=lambda source: order.index(source.alias))
+        matches = tuple(
+            KeyMatch(
+                left=a,
+                right=b,
+                left_columns=frozenset(a_columns),
+                right_columns=frozenset(b_columns),
+                condition=_shown(condition),
+                position=written[b],
+            )
+            for (a, b), (a_columns, b_columns, condition) in pairs.items()
+        )
+        return KeyedJoin(
+            sources=tuple(sources),
+            matches=matches,
+            aggregations=tuple(_aggregations(select, members)),
+        )
+
+    def _source_keys(self, scope: Scope) -> tuple[frozenset[str], ...] | None:
+        """Sets of a CTE or subquery's output columns that are unique in its rows: the
+        GROUP BY columns, every column under DISTINCT, any set at all for a single row,
+        or the keys of the one table or CTE it selects from. None when not known."""
+        if id(scope) in self._keys:
+            return self._keys[id(scope)]
+        self._keys[id(scope)] = None  # a recursive CTE reaches itself
+        keys = self._compute_keys(scope)
+        self._keys[id(scope)] = keys
+        return keys
+
+    def _compute_keys(self, scope: Scope) -> tuple[frozenset[str], ...] | None:
+        select = scope.expression
+        if not isinstance(select, exp.Select):
+            return None  # a UNION may repeat rows across its branches
+        if _row_bound(select) == 1:
+            return (frozenset(),)
+        # resolve() has expanded * and replaced output aliases in GROUP BY by what they name.
+        if select.args.get("distinct") is not None:
+            return (frozenset(n.lower() for n in select.named_selects),)
+        group = select.args.get("group")
+        if group is not None:
+            if not group.expressions:
+                return None  # GROUP BY ALL
+            outputs: dict[exp.Expr, str] = {}
+            for projection in select.expressions:
+                outputs.setdefault(projection.unalias(), projection.alias_or_name.lower())
+            key: set[str] = set()
+            for expression in group.expressions:
+                if expression not in outputs:
+                    # Left out of the output, rows that differ only in it repeat; ROLLUP,
+                    # CUBE and GROUPING SETS add rows.
+                    return None
+                key.add(outputs[expression])
+            return (frozenset(key),)
+        if len(scope.selected_sources) != 1 or select.args.get("joins"):
+            return None
+        ((alias, (_node, source)),) = scope.selected_sources.items()
+        if isinstance(source, exp.Table):
+            table = self._references.get((source.catalog, source.db, source.name))
+            inner = None if table is None else _lowered(table.keys)
+        elif isinstance(source, Scope) and isinstance(source.expression, exp.Query):
+            inner = self._source_keys(source)
+        else:
+            return None
+        if inner is None:
+            return None
+        renamed: dict[str, str] = {}
+        for projection in select.expressions:
+            column = projection.unalias()
+            if isinstance(column, exp.Column) and column.table == alias:
+                renamed.setdefault(column.name.lower(), projection.alias_or_name.lower())
+        return tuple(
+            frozenset(renamed[name] for name in key)
+            for key in inner
+            if all(name in renamed for name in key)
+        )
 
     def _sources(self, scope: Scope) -> _Sources:
         """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
@@ -627,6 +816,44 @@ def _product(
         flattened=frozenset(owner for found in owners.values() for owner in found),
         limit=_early_limit(select),
     )
+
+
+def _bare_column(node: exp.Expr) -> exp.Column | None:
+    """The column a side of a comparison is, through parentheses; None for anything else."""
+    while isinstance(node, exp.Paren):
+        node = node.this
+    return node if isinstance(node, exp.Column) and not isinstance(node.this, exp.Star) else None
+
+
+def _lowered(keys: tuple[tuple[str, ...], ...] | None) -> tuple[frozenset[str], ...] | None:
+    if keys is None:
+        return None
+    return tuple(frozenset(name.lower() for name in key) for key in keys)
+
+
+#: Aggregates that count each input row: a row the join repeats counts again.
+_REPEATED = {exp.Sum: "SUM", exp.Avg: "AVG", exp.Count: "COUNT", exp.CountIf: "COUNTIF"}
+
+
+def _aggregations(select: exp.Select, members: set[str]) -> Iterator[Aggregation]:
+    """SUM, AVG, COUNT and COUNTIF of one source's columns in the SELECT list and HAVING, without
+    DISTINCT, outside window functions. ``COUNT(*)`` counts the join's rows, as intended."""
+    having = select.args.get("having")
+    for node in [*select.expressions, *([having] if having is not None else [])]:
+        for aggregate in find_all_in_scope(node, exp.AggFunc):
+            function = _REPEATED.get(type(aggregate))
+            if function is None or aggregate.find_ancestor(exp.Window) is not None:
+                continue
+            if isinstance(aggregate.this, exp.Distinct | exp.Star) or aggregate.find(exp.Distinct):
+                continue
+            owners = {column.table for column in _local_columns(aggregate)}
+            if len(owners) == 1 and owners <= members:
+                yield Aggregation(
+                    sql=_shown(aggregate),
+                    function=function,
+                    source=owners.pop(),
+                    position=_written_at(aggregate),
+                )
 
 
 def _join_conditions(select: exp.Select) -> list[exp.Expr]:

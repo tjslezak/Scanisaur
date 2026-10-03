@@ -1,6 +1,6 @@
 # Dry-run benchmark
 
-Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (68 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read. A dry run gives only a query's total, so a query reading several tables shows the bill as a range when it can't tell how the bytes split between them.
+Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (76 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read. A dry run gives only a query's total, so a query reading several tables shows the bill as a range when it can't tell how the bytes split between them.
 
 ## Cost estimate
 
@@ -18,14 +18,14 @@ Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026
 
 BigQuery rejected 3 queries. Scanisaur gives 3 of them no estimate, as intended.
 
-Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cross-join`, `thelook-join-inequality-only`, `thelook-join-connected-later`, `thelook-join-or-of-keys`, `thelook-large-cross-join`.
+Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cross-join`, `thelook-join-inequality-only`, `thelook-join-connected-later`, `thelook-join-or-of-keys`, `thelook-large-cross-join`, `thelook-items-ordered-repeated`, `thelook-items-ordered`, `thelook-orders-counted-per-item`, `thelook-orders-counted-distinct`, `thelook-age-weighted-by-events`, `thelook-age-of-buyers`, `thelook-items-joined-on-user`, `thelook-items-joined-on-order`.
 
 ## Rules
 
 | Queries | Count | As expected |
 | --- | --- | --- |
-| Traps (a rule should fire) | 26 | 26 |
-| Others (no rule should fire) | 42 | 42 |
+| Traps (a rule should fire) | 30 | 30 |
+| Others (no rule should fire) | 46 | 46 |
 
 ## Every query
 
@@ -96,6 +96,14 @@ Not measured yet, so left out above: `thelook-join-forgotten-key`, `thelook-cros
 | `thelook-join-connected-later` | not measured | 31.5 MB (low) | - | none | none |
 | `thelook-join-or-of-keys` | not measured | 21 MB (low) | - | none | none |
 | `thelook-large-cross-join` | not measured | 30.4 MB (high) | - | SCN006 | SCN006 |
+| `thelook-items-ordered-repeated` | not measured | 21 MB (low) | - | SCN007 | SCN007 |
+| `thelook-items-ordered` | not measured | 21 MB (low) | - | none | none |
+| `thelook-orders-counted-per-item` | not measured | 31.5 MB (low) | - | SCN007 | SCN007 |
+| `thelook-orders-counted-distinct` | not measured | 31.5 MB (low) | - | none | none |
+| `thelook-age-weighted-by-events` | not measured | 65 MB (medium) | - | SCN007 | SCN007 |
+| `thelook-age-of-buyers` | not measured | 65 MB (medium) | - | none | none |
+| `thelook-items-joined-on-user` | not measured | 21 MB (low) | - | SCN007 | SCN007 |
+| `thelook-items-joined-on-order` | not measured | 21 MB (low) | - | none | none |
 | `mix-trending-articles` | 1.5 GB | 54.5 MB to 8.1 GB (medium) | 5.33 ** | none | none |
 | `mix-trends-unfiltered` | 2.6 GB | 1 GB to 9.1 GB (medium) | 3.44 ** | SCN003 | SCN003 |
 | `mix-pageviews-unfiltered` | rejected: can be used for partition elimination | none | - | SCN003 | SCN003 |

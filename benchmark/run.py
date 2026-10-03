@@ -20,7 +20,7 @@ import math
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from scanisaur.catalog.fixtures import load_catalog
-from scanisaur.catalog.model import Catalog
+from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.check import check
 from scanisaur.engine.estimate import MIN_BILLED_BYTES, billed_bytes
 from scanisaur.engine.pruning import format_bytes
@@ -43,7 +43,7 @@ CATALOG = HERE / "catalog.yaml"
 DRY_RUNS = HERE / "dry_runs.json"
 REPORT = HERE.parent / "docs" / "benchmark.md"
 #: The rules the queries' `expect` lists cover.
-RULES = ("SCN003", "SCN004", "SCN005", "SCN006", "SCN011")
+RULES = ("SCN003", "SCN004", "SCN005", "SCN006", "SCN007", "SCN011")
 #: Findings that mean Scanisaur couldn't check the query, as when the snapshot lacks a column.
 FAILURES = ("SCN000", "SCN001")
 _MIB = 2**20
@@ -86,6 +86,26 @@ def load_queries(path: Path) -> list[Query]:
     if duplicates:
         raise ValueError(f"query IDs are used more than once: {duplicates}")
     return queries
+
+
+def with_keys(catalog: Catalog, path: Path) -> Catalog:
+    """The catalog with the unique keys ``tables.yaml`` declares, which the metadata
+    snapshot can't hold: BigQuery has no keys for these tables."""
+    declared: dict[str, list[list[str]]] = yaml.safe_load(path.read_text(encoding="utf-8")).get(
+        "keys", {}
+    )
+    tables: list[Table] = []
+    for table in catalog.tables:
+        keys = declared.pop(table.qualified_name, None)
+        if keys is not None:
+            unknown = [n for key in keys for n in key if table.column(n) is None]
+            if unknown:
+                raise ValueError(f"keys of {table.qualified_name} name unknown columns: {unknown}")
+            table = replace(table, keys=tuple(tuple(key) for key in keys))
+        tables.append(table)
+    if declared:
+        raise ValueError(f"keys are declared for tables not in the catalog: {sorted(declared)}")
+    return replace(catalog, tables=tuple(tables))
 
 
 def load_dry_runs(path: Path) -> DryRuns:
@@ -492,7 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         refresh(args.project)
         return 0
     runs = load_dry_runs(DRY_RUNS)
-    text = report(outcomes(load_queries(QUERIES), load_catalog(CATALOG), runs), runs)
+    catalog = with_keys(load_catalog(CATALOG), TABLES)
+    text = report(outcomes(load_queries(QUERIES), catalog, runs), runs)
     if args.write:
         REPORT.write_text(text, encoding="utf-8")
     else:

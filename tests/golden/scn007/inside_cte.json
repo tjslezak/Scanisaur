@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN007",
+      "severity": "warn",
+      "message": "`SUM(o.amount)` counts each row of `o` (Orders) once for every row of `i` (order_items) it matches, as `order_id` isn't a unique key of `i`. The result is wrong, and BigQuery gives no error.",
+      "fix": "Reduce `i` to one row per `order_id` before joining it, with GROUP BY in a subquery, or compute `SUM(o.amount)` in a query that doesn't join `i`.",
+      "line": 2,
+      "column": 27
+    }
+  ],
+  "tables": [
+    "proj.analytics.Orders",
+    "proj.analytics.order_items",
+    "proj.analytics.users"
+  ],
+  "estimate": {
+    "bytes_low": 4232052736,
+    "bytes_high": 16222519296,
+    "confidence": "low",
+    "usd_low": 0.0241,
+    "usd_high": 0.0922
+  }
+}
