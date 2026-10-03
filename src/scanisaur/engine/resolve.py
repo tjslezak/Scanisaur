@@ -181,6 +181,26 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     return Resolution(qualified, tables, _unique(findings), by_reference)
 
 
+def unknown_tables(tree: exp.Expr, catalog: Catalog) -> list[TableKey]:
+    """``(project, dataset, name)`` of each table the statement reads that the catalog
+    lacks, with the catalog's defaults filled in. Empty when names can't be completed."""
+    tree = tree.copy()
+    _match_cte_case(tree)
+    _name_unnests(tree)
+    _scope_in_unnest(tree)
+    try:
+        nodes = [node for scope in traverse_scope(tree) for node in _table_nodes(scope)]
+    except SqlglotError:
+        return []
+    missing: dict[TableKey, None] = {}
+    for node in nodes:
+        project = node.catalog or catalog.default_project
+        dataset = node.db or catalog.default_dataset
+        if project and dataset and catalog.find(node.name, dataset, project) is None:
+            missing[(project, dataset, node.name)] = None
+    return list(missing)
+
+
 def _table_nodes(scope: Scope) -> Iterator[exp.Table]:
     """Catalog tables a scope reads; CTEs, UNNEST, table functions and INFORMATION_SCHEMA
     views are not catalog tables."""

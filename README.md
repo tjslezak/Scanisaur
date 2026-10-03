@@ -39,9 +39,20 @@ uv run pytest
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full set of checks, and [docs/adr/](docs/adr/) for the design decisions so far.
 
+### Connect a warehouse
+
+```bash
+uv sync --extra bigquery           # or --extra duckdb
+uv run scanisaur init              # writes scanisaur.yaml and prints the access to grant
+uv run scanisaur doctor            # confirms metadata access, and no data access
+echo "SELECT * FROM analytics.events" | uv run scanisaur check
+```
+
+`scanisaur check` reads the warehouse's metadata through a local SQLite cache, refreshed every 6 hours or with `scanisaur refresh`. A table created since the last refresh is looked up when a query names it. [docs/bigquery-setup.md](docs/bigquery-setup.md) explains the BigQuery permissions.
+
 ### Try the checker
 
-Until the warehouse connector lands, `scanisaur check` reads table metadata from a YAML catalog such as the one the tests use:
+Without a warehouse, `scanisaur check` reads table metadata from a YAML catalog such as the one the tests use:
 
 ```console
 $ echo "SELECT usr_id FROM events WHERE event_date = '2026-09-01'" \

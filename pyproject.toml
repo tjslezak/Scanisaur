@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2.3,<2.4",
+    "platformdirs>=4.12.2",
     "pydantic>=2.10",
     "pyyaml>=6.0",
     "sqlglot>=30.21,<31",
@@ -40,8 +41,18 @@ Issues = "https://github.com/tjslezak/Scanisaur/issues"
 [project.scripts]
 scanisaur = "scanisaur.__main__:main"
 
+[project.optional-dependencies]
+duckdb = [
+    "duckdb>=1.5.6",
+]
+bigquery = [
+    "google-cloud-bigquery>=3.46.1",
+]
+
 [dependency-groups]
 dev = [
+  "duckdb>=1.5.6",
+  "google-cloud-bigquery>=3.46.1",
   "mypy>=2.3",
   "pre-commit>=4.6",
   "pytest>=9.1",
