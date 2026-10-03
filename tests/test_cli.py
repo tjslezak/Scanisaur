@@ -8,6 +8,8 @@ from typer.testing import CliRunner, Result
 
 from scanisaur import __version__, cli
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
+from scanisaur.config import BigQueryWarehouse, DuckDBWarehouse, load_config
+from scanisaur.engine.check import DEFAULT_POLICY
 from scanisaur.engine.result import Estimate
 
 runner = CliRunner()
@@ -286,3 +288,67 @@ class TestWarehouse:
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == EXIT_ERROR
         assert "names no warehouse" in result.stderr
+
+
+class TestInit:
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+    def test_bigquery_with_options(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "--warehouse",
+                "bigquery",
+                "--project",
+                "acme",
+                "--location",
+                "EU",
+                "--dataset",
+                "analytics",
+                "--dataset",
+                "yes",
+            ],
+        )
+        assert result.exit_code == EXIT_OK, result.output
+        config = load_config(tmp_path / "scanisaur.yaml")
+        assert config.warehouse == BigQueryWarehouse(
+            type="bigquery", project="acme", location="EU", include_datasets=("analytics", "yes")
+        )
+        assert config.policy == DEFAULT_POLICY
+        assert "SA=scanisaur-catalog@acme.iam.gserviceaccount.com" in result.stdout
+        assert "roles/$role" in result.stdout
+        assert "scanisaur doctor" in result.stdout
+
+    def test_bigquery_prompts(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["init"], input="\nacme\n\na, b\n")
+        assert result.exit_code == EXIT_OK, result.output
+        warehouse = load_config(tmp_path / "scanisaur.yaml").warehouse
+        assert warehouse == BigQueryWarehouse(
+            type="bigquery", project="acme", location="US", include_datasets=("a", "b")
+        )
+
+    def test_duckdb(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["init", "--warehouse", "duckdb"], input="shop.duckdb\n")
+        assert result.exit_code == EXIT_OK, result.output
+        warehouse = load_config(tmp_path / "scanisaur.yaml").warehouse
+        assert warehouse == DuckDBWarehouse(type="duckdb", path=tmp_path / "shop.duckdb")
+        assert "gcloud" not in result.stdout
+
+    def test_refuses_to_overwrite(self, tmp_path: Path) -> None:
+        (tmp_path / "scanisaur.yaml").write_text("policy: {}\n", encoding="utf-8")
+        result = runner.invoke(app, ["init", "--warehouse", "duckdb", "--path", "x.duckdb"])
+        assert result.exit_code == EXIT_ERROR
+        assert "--force" in result.stderr
+        assert (tmp_path / "scanisaur.yaml").read_text(encoding="utf-8") == "policy: {}\n"
+        forced = runner.invoke(
+            app, ["init", "--warehouse", "duckdb", "--path", "x.duckdb", "--force"]
+        )
+        assert forced.exit_code == EXIT_OK
+
+    def test_unknown_warehouse(self) -> None:
+        result = runner.invoke(app, ["init", "--warehouse", "snowflake"])
+        assert result.exit_code == EXIT_ERROR
+        assert "use bigquery or duckdb" in result.stderr

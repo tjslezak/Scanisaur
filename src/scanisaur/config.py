@@ -233,8 +233,17 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     """Read a ``scanisaur.yaml``, raising ConfigError with the reason."""
     path = Path(path)
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ConfigError(f"{path}: {error}") from error
+    return load_config_text(text, path)
+
+
+def load_config_text(text: str, path: Path) -> Config:
+    """Read ``scanisaur.yaml`` text; ``path`` names it in errors and anchors DuckDB paths."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as error:
         raise ConfigError(f"{path}: {error}") from error
     try:
         spec = _ConfigSpec.model_validate({} if data is None else data)

@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Annotated, TypeVar
 
 import typer
+import yaml
 
 from scanisaur import __version__
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
-from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config
+from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config, load_config_text
 from scanisaur.engine.check import check
 from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Estimate, Verdict
@@ -167,6 +168,82 @@ def refresh_command(
     typer.echo(
         f"refreshed {count} table{'' if count == 1 else 's'} in {time.perf_counter() - start:.1f} s"
     )
+
+
+#: Catalog-only access for BigQuery (docs/bigquery-setup.md, spike 0003).
+_GCLOUD = """\
+SA=scanisaur-catalog@{project}.iam.gserviceaccount.com
+gcloud iam service-accounts create scanisaur-catalog --project={project} \\
+  --display-name="Scanisaur catalog-only"
+for role in bigquery.metadataViewer bigquery.jobUser; do
+  gcloud projects add-iam-policy-binding {project} --member="serviceAccount:$SA" \\
+    --role="roles/$role" --condition=None
+done
+gcloud auth application-default login --impersonate-service-account="$SA"
+"""
+
+
+@app.command("init")
+def init_command(
+    warehouse: Annotated[
+        str | None,
+        typer.Option(help="bigquery or duckdb. Asked for when left out."),
+    ] = None,
+    project: Annotated[str | None, typer.Option(help="BigQuery project.")] = None,
+    location: Annotated[str | None, typer.Option(help="BigQuery location, such as US.")] = None,
+    dataset: Annotated[
+        list[str] | None,
+        typer.Option(help="Dataset to read; repeat for several. Default: every dataset."),
+    ] = None,
+    path: Annotated[str | None, typer.Option(help="DuckDB database file.")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
+) -> None:
+    """Write a scanisaur.yaml for a warehouse, and print the access it needs."""
+    target = Path(CONFIG_FILE)
+    if target.exists() and not force:
+        typer.echo(f"error: {target} exists; add --force to overwrite it", err=True)
+        raise typer.Exit(EXIT_ERROR)
+    kind = (warehouse or typer.prompt("Warehouse (bigquery or duckdb)", default="bigquery")).lower()
+    if kind == "duckdb":
+        path = path or typer.prompt("DuckDB database file")
+        section = f"  type: duckdb\n  path: {_quoted(path)}\n"
+    elif kind == "bigquery":
+        project = project or typer.prompt("BigQuery project")
+        location = location or typer.prompt("Location", default="US")
+        if dataset is None and warehouse is None:
+            answer = typer.prompt("Datasets, comma-separated (blank for all)", default="")
+            dataset = [d.strip() for d in answer.split(",") if d.strip()]
+        section = (
+            f"  type: bigquery\n  project: {_quoted(project)}\n  location: {_quoted(location)}\n"
+        )
+        if dataset:
+            section += f"  include_datasets: [{', '.join(_quoted(d) for d in dataset)}]\n"
+    else:
+        typer.echo(f"error: unknown warehouse {kind!r}; use bigquery or duckdb", err=True)
+        raise typer.Exit(EXIT_ERROR)
+    text = (
+        f"warehouse:\n{section}"
+        "cache:\n  ttl: 6h\n"
+        "policy:\n  warn_bytes: 100GiB\n  block_bytes: 1TiB\n"
+        "# keys:                 # column sets unique in a table, for SCN007\n"
+        "#   project.dataset.table: [[id]]\n"
+    )
+    try:
+        load_config_text(text, target)
+    except ConfigError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    target.write_text(text, encoding="utf-8")
+    typer.echo(f"wrote {target}")
+    if kind == "bigquery":
+        typer.echo("\nGive Scanisaur catalog-only access (metadata, never table data):\n")
+        typer.echo(_GCLOUD.format(project=project))
+    typer.echo("Then run `scanisaur doctor` to confirm access.")
+
+
+def _quoted(value: str) -> str:
+    """A YAML scalar for ``value``, quoted only when it needs to be."""
+    return yaml.safe_dump(value, default_style=None).removesuffix("\n...\n").strip()
 
 
 @app.command("doctor")
