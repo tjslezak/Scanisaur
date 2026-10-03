@@ -54,6 +54,8 @@ estimate: 374.3 MB billed, <$0.01 (medium confidence)
 tag: /* scanisaur:q_mhpj9m1bfssq5f4fb3mv */
 ```
 
+The policy, such as the bytes a query may scan before it warns (100 GiB) or is blocked (1 TiB), comes from `scanisaur.yaml` in the working directory or the file given with `--config`. [docs/policy.md](docs/policy.md) lists every setting.
+
 It exits with 0 when the query may run, 1 when it's blocked (or warned, with `--strict`), and 2 on a usage or input error. Add `--json` for the full result, or `--capacity-pricing` for bytes without dollars.
 
 The agent adds the tag at the start or end of the SQL it runs, so the query can be found in BigQuery's job history. The tag comes from the SQL itself: the same query always gets the same tag, so repeated queries can still be served from BigQuery's cache.

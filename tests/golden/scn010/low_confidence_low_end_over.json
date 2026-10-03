@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN010",
+      "severity": "warn",
+      "message": "The query would bill 10.5 MB-356.4 GB, at or over the warn threshold of 10 MB.",
+      "fix": "Read less: filter on the partition column, or select only the columns you need. If the scan is intended, a person can raise the threshold in scanisaur.yaml.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 356400496640,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 2.0259
+  }
+}

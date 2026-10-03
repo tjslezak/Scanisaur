@@ -127,3 +127,61 @@ class TestCheckCommand:
     def test_missing_catalog_is_a_usage_error(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["check", "--catalog", str(tmp_path / "none.yaml")])
         assert result.exit_code == EXIT_ERROR
+
+
+#: About 347 GB: over the default warn threshold, under the block threshold.
+FULL_SCAN = "SELECT user_id FROM events WHERE event_date IS NOT NULL"
+
+
+class TestPolicyFile:
+    def test_config_option(self, tmp_path: Path) -> None:
+        config = tmp_path / "policy.yaml"
+        config.write_text("policy: {block_bytes: 300GB}\n", encoding="utf-8")
+        result = run_check("--config", str(config), sql=FULL_SCAN)
+        assert result.exit_code == EXIT_BLOCKED
+        assert (
+            "SCN010  block  The query would bill 356.4 GB, at or over the block threshold "
+            "of 300 GB." in result.stdout
+        )
+
+    def test_found_in_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "scanisaur.yaml").write_text("policy: {rules: {SCN010: block}}\n")
+        monkeypatch.chdir(tmp_path)
+        assert run_check(sql=FULL_SCAN).exit_code == EXIT_BLOCKED
+
+    def test_default_without_a_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = run_check(sql=FULL_SCAN)
+        assert result.exit_code == EXIT_OK
+        assert "SCN010  warn   The query would bill 356.4 GB" in result.stdout
+
+    def test_flags_override_the_file(self, tmp_path: Path) -> None:
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text("policy: {read_only: true, fail_mode: open}\n", encoding="utf-8")
+        sql = "INSERT INTO users (user_id) SELECT user_id FROM events"
+        assert run_check("--config", str(config), sql=sql).exit_code == EXIT_BLOCKED
+        assert run_check("--config", str(config), "--allow-writes", sql=sql).exit_code == EXIT_OK
+        closed = run_check("--config", str(config), "--fail-closed", sql="DECLARE x INT64")
+        assert closed.exit_code == EXIT_BLOCKED
+        priced = run_check("--config", str(config), "--capacity-pricing", sql=FULL_SCAN)
+        assert "$" not in priced.stdout.splitlines()[-2]
+
+    def test_file_off_flag_still_applies(self, tmp_path: Path) -> None:
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text("policy: {read_only: false}\n", encoding="utf-8")
+        sql = "INSERT INTO users (user_id) SELECT user_id FROM events"
+        assert run_check("--config", str(config), sql=sql).exit_code == EXIT_OK
+
+    def test_invalid_config(self, tmp_path: Path) -> None:
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text("policy: {warn_bytes: lots}\n", encoding="utf-8")
+        result = run_check("--config", str(config), sql="SELECT 1")
+        assert result.exit_code == EXIT_ERROR
+        assert result.stderr.startswith(f"error: {config}")
+        assert "expected a size" in result.stderr
+
+    def test_missing_config_is_a_usage_error(self, tmp_path: Path) -> None:
+        result = run_check("--config", str(tmp_path / "none.yaml"), sql="SELECT 1")
+        assert result.exit_code == EXIT_ERROR

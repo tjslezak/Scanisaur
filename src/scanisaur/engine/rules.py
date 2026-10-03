@@ -14,5 +14,20 @@ PRUNING_DEFEATED = "SCN004"
 SELECT_STAR = "SCN005"
 #: Sources joined with nothing, or only a non-equality, relating them: every row pairs.
 CROSS_JOIN = "SCN006"
+#: The estimated bytes billed reach the policy's warn or block threshold.
+SCAN_THRESHOLD = "SCN010"
 #: A filter on a later cluster column with none on the leading one, so clustering helps little.
 CLUSTER_PREFIX = "SCN011"
+
+#: Every rule, in order. A policy can override the severity of any of them.
+ALL_RULES = (
+    UNANALYZABLE,
+    UNKNOWN_IDENTIFIER,
+    WRITE_STATEMENT,
+    PARTITION_FILTER,
+    PRUNING_DEFEATED,
+    SELECT_STAR,
+    CROSS_JOIN,
+    SCAN_THRESHOLD,
+    CLUSTER_PREFIX,
+)

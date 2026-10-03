@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verdict": "warn",
+  "verdict": "block",
   "findings": [
     {
       "rule": "SCN003",
@@ -17,6 +17,14 @@
       "fix": "Select only the columns you need. For column names and types, use `scanisaur_schema_describe`, which reads no data.",
       "line": 1,
       "column": 15
+    },
+    {
+      "rule": "SCN010",
+      "severity": "block",
+      "message": "The query would bill 2.1 TB, at or over the block threshold of 1 TiB.",
+      "fix": "Read less: filter on the partition column, or select only the columns you need. If the scan is intended, a person can raise the threshold in scanisaur.yaml.",
+      "line": null,
+      "column": null
     }
   ],
   "tables": [
