@@ -21,6 +21,12 @@ tables:
       user_id: STRING
       country: STRING
       signup_date: DATE
+  - name: proj.analytics.calendar
+    rows: 365
+    bytes: 3285
+    columns:
+      day: DATE
+      is_holiday: BOOL
   - name: proj.analytics.Orders
     rows: 80000000
     bytes: 12000000000

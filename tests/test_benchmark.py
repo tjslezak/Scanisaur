@@ -298,10 +298,12 @@ tables:
             (MIN_BILLED_BYTES, MIN_BILLED_BYTES),
             (12 * 2**20, 12 * 2**20),
         )
-        # With two tables, from all bytes in one (the other read nothing) to both read,
-        # each at least 10 MiB: 14.5 + 0.5 MiB bills 15 + 10.
-        assert run.billed(15 * 2**20, tables=2) == (15 * 2**20, 25 * 2**20)
-        assert run.billed(3_911_816, tables=2) == (MIN_BILLED_BYTES, 2 * MIN_BILLED_BYTES)
+        # With two tables, each billed at least 10 MiB: from 7.5 + 7.5 MiB, billed 10 + 10,
+        # to all 15 MiB in one, billed 15 + 10.
+        assert run.billed(15 * 2**20, tables=2) == (20 * 2**20, 25 * 2**20)
+        assert run.billed(25 * 2**20, tables=2) == (25 * 2**20, 35 * 2**20)
+        # The join in #26 read 1.3 MB of one table and billed 20 MiB.
+        assert run.billed(1_286_408, tables=2) == (2 * MIN_BILLED_BYTES, 2 * MIN_BILLED_BYTES)
         assert run.billed(0, tables=2) == (0, 0)
 
     def test_ratio_and_range_use_the_nearest_bill(self, tmp_path: Path) -> None:

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "block",
+      "message": "`u` (users) and `s` (store_sales) are joined with nothing relating them, so every row of one pairs with every row of the other: about 2 trillion pairs. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 4,
+      "column": 39
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.analytics.Orders",
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 451936256,
+    "bytes_high": 6121586688,
+    "confidence": "low",
+    "usd_low": 0.0026,
+    "usd_high": 0.0348
+  }
+}

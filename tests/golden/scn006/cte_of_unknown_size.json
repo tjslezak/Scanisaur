@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "warn",
+      "message": "`r` and `s` (store_sales) are joined with nothing relating them, so every row of one pairs with every row of the other: how many isn't known, as `r` may hold any number of rows. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 3,
+      "column": 39
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 20971520,
+    "bytes_high": 9611247616,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 0.0546
+  }
+}

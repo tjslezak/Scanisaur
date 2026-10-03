@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "warn",
+      "message": "Nothing relates `s` (store_sales) to the join of `e` (events) and `u` (users), so every row of one pairs with every row of the other: how many isn't known, as the join of `e` (events) and `u` (users) may hold any number of rows. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 4,
+      "column": 16
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users",
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 451936256,
+    "bytes_high": 356841947136,
+    "confidence": "low",
+    "usd_low": 0.0026,
+    "usd_high": 2.0284
+  }
+}

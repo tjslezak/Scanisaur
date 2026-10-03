@@ -15,7 +15,8 @@ The unit is the leaf field: BigQuery bills ``device.category`` without the rest 
   anything up to all of it.
 - **Clustering:** a filter on a cluster column may skip blocks that metadata can't see, so
   the table's estimate is an upper bound.
-- **Minimum:** each table read is billed at least 10 MB.
+- **Minimum:** each table is billed at least 10 MiB once the query bills anything, even a
+  table it reads no columns of or prunes to no partitions. A self-join is one table.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ from typing import TypeVar
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from scanisaur.catalog.model import Granularity, Table
-from scanisaur.engine.facts import QueryFacts, TableFacts
+from scanisaur.catalog.model import PARTITIONDATE, PARTITIONTIME, TABLE_SUFFIX, Granularity, Table
+from scanisaur.engine.facts import Predicate, QueryFacts, TableFacts
 from scanisaur.engine.parse import DIALECT
 from scanisaur.engine.pruning import (
     defeats_pruning,
@@ -131,7 +132,7 @@ def estimate(
         free = None if price_per_tib is None else 0.0
         return Estimate(bytes_low=0, bytes_high=0, confidence="high", usd_low=free, usd_high=free)
     now = _naive_utc(now)
-    low = high = 0
+    low = high = free = 0
     confidence: Confidence = "high"
     for name, references in by_table.items():
         result = _table_estimate(references, now)
@@ -141,8 +142,14 @@ def estimate(
         if name in sampled and table_high:
             table_low = MIN_BILLED_BYTES
             table_confidence = "low"
+        free += not table_high
         low, high = low + table_low, high + table_high
         confidence = min(confidence, table_confidence, key=_RANK.__getitem__)
+    if high:
+        # Measured (#26): once a query bills anything, each table it references is billed
+        # its minimum, even one it reads no columns of or prunes to no partitions. A query
+        # that bills nothing, such as `SELECT COUNT(*)` on one table, stays free.
+        low, high = low + free * MIN_BILLED_BYTES, high + free * MIN_BILLED_BYTES
     usd_low = usd_high = None
     if price_per_tib is not None:
         usd_low = round(low / _TIB * price_per_tib, 4)
@@ -206,11 +213,7 @@ def _table_estimate(
     if size is None or not _estimable(table):
         return None
     layout = _layout(table)
-    listed = bool(table.partitions) and (table.partitioning is not None or table.is_wildcard)
-    domain = _domain(table, now) if table.partitioning is not None or table.is_wildcard else None
-    units = {p.id: p.size_bytes for p in table.partitions} if listed else {_WHOLE: size}
-    if listed and domain is not None:
-        units |= _newer(table, domain)
+    units, domain = _units(table, size, now)
     high_leaves: dict[str, set[_Leaf]] = {}
     low_leaves: dict[str, set[_Leaf]] = {}
     confidence: Confidence = "high"
@@ -251,16 +254,92 @@ def _scanned(
     )
 
 
+def table_rows(reference: TableFacts, now: datetime) -> tuple[int, bool] | None:
+    """The rows a reference reads: the table's row count times the share of its bytes in
+    the partitions its filters keep. The flag says whether that count is known, which it
+    is only when every filter on the table is a partition filter evaluated exactly: any
+    other filter, a join or a subquery may leave far fewer rows. None without a row count
+    or a size."""
+    table = reference.table
+    rows, size = table.row_count, table.size_bytes
+    if rows is None or size is None or not _estimable(table):
+        return None
+    if size == 0:
+        return rows, rows == 0  # an empty table holds no rows
+    units, domain = _units(table, size, _naive_utc(now))
+    high, _low, confidence = _partitions(reference, units, domain)
+    kept = sum(units[unit] for unit in high)
+    count = round(rows * min(kept / size, 1.0))
+    return count, confidence == "high" and _only_partition_filters(reference)
+
+
+def _only_partition_filters(reference: TableFacts) -> bool:
+    """True when nothing but filters that prune partitions limits the reference's rows."""
+    table = reference.table
+    if reference.linked:
+        return False  # a correlated subquery, INTERSECT or a filter above a LIMIT
+    keys: frozenset[str] = frozenset()
+    if table.is_wildcard:
+        keys = frozenset({TABLE_SUFFIX.lower()})
+    elif table.partitioning is not None:
+        keys = partition_names(table)
+    parsed = parsed_conditions(reference)
+    if len(parsed) != len(reference.predicates):
+        return False  # a condition that couldn't be parsed
+    return all(
+        predicate.column.lower() in keys
+        and predicate.op != "other"
+        and predicate.constant
+        and not (table.partitioning is not None and defeats_pruning(tree, table))
+        and _whole_partitions(predicate, table)
+        for predicate, tree in parsed
+    )
+
+
+def _whole_partitions(predicate: Predicate, table: Table) -> bool:
+    """True when the filter keeps or drops whole partitions, so the rows it keeps are
+    theirs: a shard suffix, a pseudo-column holding each partition's start, or a DATE
+    partitioned by day, as `day = '…'` or `DATE(ts) = '…'`. A finer filter, such as a
+    five-second window in a daily partition, keeps fewer rows than its partitions hold."""
+    column = predicate.column.lower()
+    if table.is_wildcard or column in (PARTITIONTIME.lower(), PARTITIONDATE.lower()):
+        return True
+    partitioning = table.partitioning
+    if partitioning is None or partitioning.granularity != "DAY":
+        return False
+    types = {c.name.lower(): c.type.upper() for c in table.columns}
+    return types.get(column) == "DATE" or (predicate.wrapper or "").upper() == "DATE"
+
+
+def _units(table: Table, size: int, now: datetime) -> tuple[dict[str, int], _Domain | None]:
+    """The table's partitions by ID with their bytes, or the whole table as one unit
+    without a partition list; and the values its partitions hold."""
+    listed = bool(table.partitions) and (table.partitioning is not None or table.is_wildcard)
+    domain = _domain(table, now) if table.partitioning is not None or table.is_wildcard else None
+    units = {p.id: p.size_bytes for p in table.partitions} if listed else {_WHOLE: size}
+    if listed and domain is not None:
+        units |= _newer(table, domain)
+    return units, domain
+
+
 def _read(
     reference: TableFacts,
     layout: _Layout,
     units: dict[str, int],
     domain: _Domain | None,
 ) -> _Read:
-    table = reference.table
     leaves = _leaves_read(reference, layout)
     if not leaves:
         return _Read(frozenset(), frozenset(), frozenset(), "high")
+    high, low, confidence = _partitions(reference, units, domain)
+    return _Read(leaves, high, low, confidence)
+
+
+def _partitions(
+    reference: TableFacts, units: dict[str, int], domain: _Domain | None
+) -> tuple[frozenset[str], frozenset[str], Confidence]:
+    """The units a reference may read, those it surely reads, and how well that is known."""
+    table = reference.table
     parsed = parsed_conditions(reference)
     conditions = partition_conditions(reference, parsed)
     narrowed = table.is_wildcard and len(reference.name) > len(table.name)
@@ -271,10 +350,10 @@ def _read(
             _keeps_all(tree, domain, table) for tree in conditions
         )
         if limited or narrowed:  # limits partitions, by how much isn't known
-            return _Read(leaves, whole, frozenset(), "low")
+            return whole, frozenset(), "low"
         if blocks:
-            return _Read(leaves, whole, frozenset(), "medium")
-        return _Read(leaves, whole, whole, "high")
+            return whole, frozenset(), "medium"
+        return whole, whole, "high"
     if all(_keeps_all(tree, domain, table) for tree in conditions):
         # Unfiltered: the partitions listed. Newer ones matter only to a filter that
         # could pick them alone, such as `= CURRENT_DATE()`.
@@ -288,7 +367,7 @@ def _read(
         confidence = min(confidence, "medium", key=_RANK.__getitem__)
     known = frozenset(unit for unit in high if not _is_newer(unit))
     low = known if exact and not blocks else frozenset()
-    return _Read(leaves, high, low, confidence)
+    return high, low, confidence
 
 
 def _leaves_read(reference: TableFacts, layout: _Layout) -> frozenset[_Leaf]:

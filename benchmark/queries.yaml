@@ -1,6 +1,6 @@
 # Queries for the dry-run benchmark (issue #10). Each is dry-run against BigQuery and
 # checked by Scanisaur. `expect` lists the rules that should fire, from SCN003, SCN004,
-# SCN005 and SCN011; an empty list means the query should pass. Traps and their fixes
+# SCN005, SCN006 and SCN011; an empty list means the query should pass. Traps and their fixes
 # come in pairs, after the patterns in issue #10.
 #
 # Rolling tables (Trends, deps.dev, PyPI) are queried at fixed days they keep, or
@@ -269,6 +269,38 @@
   sql: >-
     SELECT u.country, COUNT(*) AS orders FROM `bigquery-public-data.thelook_ecommerce.users` AS u
     JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o ON o.user_id = u.id GROUP BY u.country
+
+# Joins that pair every row with every row (SCN006, #23).
+- id: thelook-join-forgotten-key
+  expect: [SCN006]
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` AS u,
+    `bigquery-public-data.thelook_ecommerce.orders` AS o WHERE o.status = 'Complete'
+- id: thelook-cross-join
+  expect: [SCN006]
+  sql: >-
+    SELECT SUM(u.age * o.num_of_item) FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    CROSS JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o
+- id: thelook-join-inequality-only
+  expect: [SCN006]
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o ON o.created_at < u.created_at
+- id: thelook-join-connected-later
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` AS u,
+    `bigquery-public-data.thelook_ecommerce.orders` AS o,
+    `bigquery-public-data.thelook_ecommerce.order_items` AS i
+    WHERE i.order_id = o.order_id AND i.user_id = u.id
+- id: thelook-join-or-of-keys
+  sql: >-
+    SELECT COUNT(*) FROM `bigquery-public-data.thelook_ecommerce.users` AS u
+    JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o ON o.user_id = u.id OR o.order_id = u.id
+- id: thelook-large-cross-join
+  expect: [SCN006]
+  sql: >-
+    SELECT SUM(e.sequence_number * u.age) FROM `bigquery-public-data.thelook_ecommerce.events` AS e
+    CROSS JOIN `bigquery-public-data.thelook_ecommerce.users` AS u
 
 # Mixes: a required and an optional table in one query.
 - id: mix-trending-articles
