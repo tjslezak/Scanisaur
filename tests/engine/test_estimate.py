@@ -269,6 +269,18 @@ class TestColumns:
             COLUMN + MIN_BILLED_BYTES,
         )
 
+    def test_table_read_in_unnest_subquery_is_billed(self) -> None:
+        # sqlglot gives a subquery inside `IN UNNEST((...))` no scope of its own.
+        users = Table("p", "d", "users", (Column("id", "INT64"),), row_count=10, size_bytes=80)
+        sql = (
+            "SELECT id FROM users WHERE id IN UNNEST("
+            f"(SELECT ARRAY_AGG(rank) FROM trends WHERE {ONE_DAY}))"
+        )
+        assert billed(sql, TRENDS, users) == (
+            MIN_BILLED_BYTES + 2 * COLUMN,
+            MIN_BILLED_BYTES + 2 * COLUMN,
+        )
+
     def test_tables_that_read_nothing_stay_free_together(self) -> None:
         users = Table("p", "d", "users", (Column("id", "INT64"),), row_count=10, size_bytes=80)
         assert billed("SELECT COUNT(*) FROM users, trends", TRENDS, users) == (0, 0)
@@ -888,7 +900,12 @@ class TestSecondReview:
 
 class TestFloor:
     def test_unknown_unit_gives_none_rather_than_day(self) -> None:
-        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), "MINUTE") is None
+        # Only the units _trunc models become a _Floor step; anything else can't be estimated.
+        tree = sqlglot.parse_one(
+            "TIMESTAMP_TRUNC(TIMESTAMP '2026-10-03 05:29:00', MINUTE)", dialect="bigquery"
+        )
+        assert estimate_module._time_value(tree, NOW.replace(tzinfo=None)) is None
 
     def test_day(self) -> None:
-        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), "DAY") == datetime(2026, 10, 3)
+        day = estimate_module._DAY
+        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), day) == datetime(2026, 10, 3)

@@ -141,6 +141,7 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     tree = tree.copy()  # names are respelled and completed in place below
     _match_cte_case(tree)
     _name_unnests(tree)
+    _scope_in_unnest(tree)
     try:
         references = [node for scope in traverse_scope(tree) for node in _table_nodes(scope)]
     except SqlglotError as error:
@@ -287,6 +288,19 @@ def _name_unnests(tree: exp.Expr) -> None:
     for index, unnest in enumerate(tree.find_all(exp.Unnest)):
         if unnest.args.get("alias") is None and isinstance(unnest.parent, exp.From | exp.Join):
             unnest.set("alias", exp.TableAlias(this=exp.to_identifier(f"_unnest{index}")))
+
+
+def _scope_in_unnest(tree: exp.Expr) -> None:
+    """Respell ``x IN UNNEST((SELECT ...))`` as ``x IN UNNEST(ARRAY(SELECT ...))``. sqlglot's
+    scopes skip a subquery there, so the tables it reads would go unchecked and unbilled.
+    The rewrite only changes how the query is scoped; checks read its tables and columns."""
+    for node in tree.find_all(exp.In):
+        unnest = node.args.get("unnest")
+        if not isinstance(unnest, exp.Unnest):
+            continue
+        for argument in unnest.expressions:
+            if isinstance(argument, exp.Subquery) and isinstance(argument.this, exp.Query):
+                argument.replace(exp.Array(expressions=[argument.this]))
 
 
 def _complete_name(node: exp.Table, table: Table) -> None:
