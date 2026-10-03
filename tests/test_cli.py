@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
-from scanisaur import __version__, cli
+from scanisaur import __version__
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
 from scanisaur.engine.result import Estimate
+from scanisaur.tools import describe_estimate
 
 runner = CliRunner()
 
@@ -56,7 +57,7 @@ class TestCheckCommand:
 
     def test_nearly_equal_range_is_shown_once(self) -> None:
         estimate = Estimate(bytes_low=10_485_760, bytes_high=10_500_000, confidence="low")
-        assert cli._estimate(estimate) == "10.5 MB billed (low confidence)"
+        assert describe_estimate(estimate) == "10.5 MB billed (low confidence)"
 
     def test_estimate_without_dollars(self) -> None:
         result = run_check("--capacity-pricing", sql="SELECT score FROM web.trends")

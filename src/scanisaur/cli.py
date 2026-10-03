@@ -2,9 +2,8 @@
 
 import dataclasses
 import sys
-from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 import typer
 
@@ -12,15 +11,13 @@ from scanisaur import __version__
 from scanisaur.catalog.fixtures import FixtureError, load_catalog
 from scanisaur.config import CONFIG_FILE, ConfigError, load_policy
 from scanisaur.engine.check import DEFAULT_POLICY, Policy, check
-from scanisaur.engine.pruning import format_bytes
-from scanisaur.engine.result import CheckResult, Estimate, Verdict
+from scanisaur.engine.result import CheckResult, Verdict
+from scanisaur.tools import describe_estimate
 
 #: Exit codes for ``scanisaur check``. 2 is also what Click uses for usage errors.
 EXIT_OK = 0
 EXIT_BLOCKED = 1
 EXIT_ERROR = 2
-
-_N = TypeVar("_N", int, float)
 
 app = typer.Typer(
     name="scanisaur",
@@ -148,23 +145,6 @@ def _format(result: CheckResult) -> str:
         if finding.fix:
             lines.append(f"  {'':<7} {'':<6}  fix:   {finding.fix}")
     if result.estimate is not None:
-        lines.append(f"estimate: {_estimate(result.estimate)}")
+        lines.append(f"estimate: {describe_estimate(result.estimate)}")
     lines.append(f"tag: {result.tag}")
     return "\n".join(lines)
-
-
-def _estimate(estimate: Estimate) -> str:
-    """For example ``1.6-2.4 GB billed, $0.01-$0.02 (medium confidence)``."""
-    shown = _span(estimate.bytes_low, estimate.bytes_high, format_bytes) + " billed"
-    if estimate.usd_low is not None and estimate.usd_high is not None:
-        shown += ", " + _span(estimate.usd_low, estimate.usd_high, _dollars)
-    return f"{shown} ({estimate.confidence} confidence)"
-
-
-def _span(low: _N, high: _N, show: Callable[[_N], str]) -> str:
-    shown = show(low), show(high)
-    return shown[0] if shown[0] == shown[1] else f"{shown[0]}-{shown[1]}"
-
-
-def _dollars(value: float) -> str:
-    return "<$0.01" if 0 < value < 0.005 else f"${value:.2f}"
