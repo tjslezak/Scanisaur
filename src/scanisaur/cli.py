@@ -12,6 +12,7 @@ import typer
 import yaml
 
 from scanisaur import __version__
+from scanisaur.audit.log import append, decision, log_directory
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
@@ -141,10 +142,23 @@ def check_command(
     if capacity_pricing:
         policy = dataclasses.replace(policy, price_per_tib=None)
     result = check(sql, loaded, policy=policy)
+    _log_check(settings, result, sql)
     typer.echo(result.model_dump_json(indent=2) if as_json else _format(result))
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
+
+
+def _log_check(settings: Config, result: CheckResult, sql: str) -> None:
+    """Add the check to the decision log; a log that can't be written only warns."""
+    if not settings.log.enabled:
+        return
+    warehouse = settings.warehouse.name if settings.warehouse else None
+    entry = decision(result, sql, source="cli", warehouse=warehouse, raw_sql=settings.log.raw_sql)
+    try:
+        append(log_directory(settings.log), entry)
+    except OSError as error:
+        typer.echo(f"warning: decision log not written: {error}", err=True)
 
 
 @app.command("serve")

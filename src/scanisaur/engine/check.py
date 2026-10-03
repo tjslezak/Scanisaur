@@ -54,6 +54,27 @@ _FINGERPRINT_DIGITS = 20
 #: A tracking tag at the start or end of the SQL, where agents add it.
 _LEADING_TAG = re.compile(r"\A\s*/\*\s*scanisaur:[0-9a-z_]+\s*\*/")
 _TRAILING_TAG = re.compile(r"/\*\s*scanisaur:[0-9a-z_]+\s*\*/\s*\Z")
+#: Every kind of constant sqlglot parses, each replaced by ``?`` in a shape.
+_LITERALS = (
+    exp.Literal,
+    exp.RawString,
+    exp.ByteString,
+    exp.HexString,
+    exp.BitString,
+    exp.National,
+    exp.UnicodeString,
+    exp.Boolean,
+    exp.Null,
+)
+#: A value left in a shape: a quoted string or a hex number.
+_VALUE = re.compile(r"['\"]|\b0[xX][0-9a-fA-F]+\b")
+#: For SQL that doesn't parse: a quoted string, a comment, or a number.
+_TOKEN = re.compile(
+    r"""(?P<string>'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")"""
+    r"|(?P<comment>/\*.*?\*/|(?:--|#)[^\n]*)"
+    r"|(?P<number>\b\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\b)",
+    re.DOTALL,
+)
 
 #: A rule's severity set by policy, or "off" to drop its findings.
 RuleSetting = Literal["off", "info", "warn", "block"]
@@ -313,16 +334,72 @@ def fingerprint(sql: str) -> str:
     included: BigQuery serves cached results only for identical text, and a comment such as
     ``#legacySQL`` can change what the query means.
     """
+    return "q_" + _digest(_untagged(sql))
+
+
+def shape(sql: str) -> str:
+    """The query on one line, without comments and with every literal value as ``?``.
+
+    Queries that differ only in their constants share a shape, so the decision log and
+    ``scanisaur audit`` can group them without keeping values such as email addresses.
+    A list of constants after ``IN`` becomes one ``?``, whatever its length.
+    """
+    text = _untagged(sql)
+    try:
+        statements = parse(text, DIALECT)
+        shaped = "; ".join(
+            statement.transform(_placeholder).sql(dialect=DIALECT, comments=False)
+            for statement in statements
+        )
+    except (SqlParseError, RecursionError):
+        return _rough_shape(text)
+    # A literal kind not in _LITERALS would keep its value: shape by pattern instead.
+    return _rough_shape(text) if _VALUE.search(shaped) else shaped
+
+
+def shape_fingerprint(sql: str) -> str:
+    """Identify a query's :func:`shape`: the same for queries that differ only in constants."""
+    return "s_" + _digest(shape(sql))
+
+
+def _untagged(sql: str) -> str:
+    """``sql`` without tracking tags at its start or end, or whitespace around it."""
     text = sql
     while True:  # an agent may have added more than one tag
         untagged = _TRAILING_TAG.sub("", _LEADING_TAG.sub("", text))
         if untagged == text:
-            break
+            return text.strip()
         text = untagged
+
+
+def _digest(text: str) -> str:
     # surrogatepass: SQL decoded from JSON can hold an unpaired surrogate.
-    data = text.strip().encode("utf-8", "surrogatepass")
+    data = text.encode("utf-8", "surrogatepass")
     digest = int.from_bytes(hashlib.sha256(data).digest(), "big")
-    return "q_" + _base32(digest >> (256 - 5 * _FINGERPRINT_DIGITS), _FINGERPRINT_DIGITS)
+    return _base32(digest >> (256 - 5 * _FINGERPRINT_DIGITS), _FINGERPRINT_DIGITS)
+
+
+def _placeholder(node: exp.Expr) -> exp.Expr:
+    if _is_constant(node):
+        return exp.Placeholder()
+    values = node.expressions if isinstance(node, exp.In) else []
+    if values and all(_is_constant(value) for value in values):
+        node = node.copy()
+        node.set("expressions", [exp.Placeholder()])
+    return node
+
+
+def _is_constant(node: exp.Expr) -> bool:
+    """Literal values, including numbers represented by a unary minus."""
+    return isinstance(node, _LITERALS) or (
+        isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal) and node.this.is_number
+    )
+
+
+def _rough_shape(text: str) -> str:
+    """A shape for SQL that doesn't parse: comments, strings and numbers removed by pattern."""
+    text = _TOKEN.sub(lambda match: " " if match["comment"] else "?", text)
+    return " ".join(text.split())
 
 
 def tag_for(sql: str) -> str:

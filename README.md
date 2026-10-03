@@ -50,6 +50,8 @@ echo "SELECT * FROM analytics.events" | uv run scanisaur check
 
 `scanisaur check` reads the warehouse's metadata through a local SQLite cache, refreshed every 6 hours or with `scanisaur refresh`. A table created since the last refresh is looked up when a query names it. [docs/bigquery-setup.md](docs/bigquery-setup.md) explains the BigQuery permissions.
 
+Every check is recorded in a local decision log; see [docs/decision-log.md](docs/decision-log.md).
+
 ### Try the checker
 
 Without a warehouse, `scanisaur check` reads table metadata from a YAML catalog such as the one the tests use:

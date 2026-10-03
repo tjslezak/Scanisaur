@@ -366,3 +366,28 @@ class TestInit:
         result = runner.invoke(app, ["init"], input="snowflake\n")
         assert result.exit_code == 2
         assert "use bigquery or duckdb" in result.stderr
+
+
+class TestDecisionLog:
+    def test_check_is_logged(self, tmp_path: Path) -> None:
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text(f"log: {{path: {tmp_path / 'log'}, raw_sql: true}}\n", encoding="utf-8")
+        sql = "SELECT user_id FROM events WHERE event_date = '2026-09-01'"
+        assert run_check("--config", str(config), sql=sql).exit_code == EXIT_OK
+        [file] = (tmp_path / "log").iterdir()
+        entry = json.loads(file.read_text(encoding="utf-8"))
+        assert (entry["source"], entry["verdict"], entry["sql"]) == ("cli", "pass", sql)
+
+    def test_log_off(self, tmp_path: Path) -> None:
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text(f"log: {{enabled: false, path: {tmp_path / 'log'}}}\n", encoding="utf-8")
+        assert run_check("--config", str(config), sql="SELECT 1").exit_code == EXIT_OK
+        assert not (tmp_path / "log").exists()
+
+    def test_unwritable_log_warns(self, tmp_path: Path) -> None:
+        (tmp_path / "file").write_text("", encoding="utf-8")
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text(f"log: {{path: {tmp_path / 'file'}}}\n", encoding="utf-8")
+        result = run_check("--config", str(config), sql="SELECT 1")
+        assert result.exit_code == EXIT_OK
+        assert "warning: decision log not written" in result.stderr
