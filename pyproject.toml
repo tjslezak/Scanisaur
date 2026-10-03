@@ -38,7 +38,7 @@ Homepage = "https://github.com/tjslezak/Scanisaur"
 Issues = "https://github.com/tjslezak/Scanisaur/issues"
 
 [project.scripts]
-scanisaur = "scanisaur.cli:app"
+scanisaur = "scanisaur.__main__:main"
 
 [dependency-groups]
 dev = [

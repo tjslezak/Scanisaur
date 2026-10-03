@@ -13,6 +13,8 @@ from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, ConfigError, load_policy
 from scanisaur.engine.check import DEFAULT_POLICY, Policy, check
 from scanisaur.engine.result import CheckResult, Verdict
+from scanisaur.hook import main as hook_main
+from scanisaur.hook import policy_file, socket_path
 from scanisaur.tools import describe_estimate
 
 #: Exit codes for ``scanisaur check``. 2 is also what Click uses for usage errors.
@@ -160,12 +162,24 @@ def serve_command(
     # Imported here: the MCP SDK takes about a second to import, and only serve needs it.
     from scanisaur.server import build_server
 
-    build_server(source, policy).run("stdio")
+    hook_socket = socket_path(catalog, policy_file(config))
+    build_server(source, policy, hook_socket).run("stdio")
+
+
+@app.command(
+    "hook",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    add_help_option=False,
+)
+def hook_command(ctx: typer.Context) -> None:
+    """Check the SQL in an agent's tool call, for an agent harness to run before the
+    call. Talks to a running `serve` started with the same --catalog and --config."""
+    # `scanisaur hook` normally starts in scanisaur.__main__, skipping this module's imports.
+    raise typer.Exit(hook_main(ctx.args))
 
 
 def _policy(config: Path | None) -> Policy:
-    if config is None and Path(CONFIG_FILE).is_file():
-        config = Path(CONFIG_FILE)
+    config = policy_file(config)
     return DEFAULT_POLICY if config is None else load_policy(config)
 
 

@@ -6,6 +6,9 @@ to the agent and turns their results into MCP responses.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated
 
 from mcp.server import MCPServer
@@ -16,6 +19,7 @@ from scanisaur import __version__, tools
 from scanisaur.catalog.source import CatalogSource
 from scanisaur.engine.check import Policy
 from scanisaur.engine.result import CheckResult
+from scanisaur.listener import hook_listener
 
 #: Sent when a client connects. The agent evaluation (#10) tunes these words.
 INSTRUCTIONS = """\
@@ -34,9 +38,23 @@ scanisaur_schema_describe."""
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
 
 
-def build_server(source: CatalogSource, policy: Policy) -> MCPServer:
-    """An MCP server answering from ``source`` under ``policy``."""
-    server = MCPServer(name="scanisaur", version=__version__, instructions=INSTRUCTIONS)
+def build_server(
+    source: CatalogSource, policy: Policy, hook_socket: Path | None = None
+) -> MCPServer:
+    """An MCP server answering from ``source`` under ``policy``, and answering
+    ``scanisaur hook`` on ``hook_socket`` while it runs."""
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: MCPServer) -> AsyncIterator[None]:
+        if hook_socket is None:
+            yield
+            return
+        async with hook_listener(hook_socket, source, policy):
+            yield
+
+    server = MCPServer(
+        name="scanisaur", version=__version__, instructions=INSTRUCTIONS, lifespan=lifespan
+    )
 
     @server.tool(name="scanisaur_schema_search", annotations=_READ_ONLY)
     def schema_search(
