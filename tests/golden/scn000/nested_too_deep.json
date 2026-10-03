@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN000",
+      "severity": "warn",
+      "message": "The SQL is nested too deeply to analyze.",
+      "fix": "Move nested subqueries into WITH clauses, or nest fewer expressions.",
+      "line": null,
+      "column": null
+    }
+  ],
+  "tables": [],
+  "estimate": null
+}

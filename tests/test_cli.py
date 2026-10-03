@@ -88,6 +88,12 @@ class TestCheckCommand:
         assert strict.exit_code == EXIT_BLOCKED
         assert "  -       SCN000  warn   DECLARE statements can't be checked." in strict.stdout
 
+    def test_deeply_nested_sql_warns(self) -> None:
+        sql = "SELECT " + "(" * 200 + "1" + ")" * 200
+        result = run_check(sql=sql)
+        assert result.exit_code == EXIT_OK
+        assert "SCN000" in result.stdout
+
     def test_fail_closed(self) -> None:
         result = run_check("--fail-closed", sql="DECLARE x INT64")
         assert result.exit_code == EXIT_BLOCKED
