@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "info",
+      "message": "`proj.web.daily_sample` is partitioned by `day`, but the query doesn't filter on it, so it reads every partition (13.5 MB in all).",
+      "fix": "Add a filter on `day`, for example `day >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 2,
+      "column": 28
+    }
+  ],
+  "tables": [
+    "proj.web.daily_sample"
+  ],
+  "estimate": {
+    "bytes_low": 12582912,
+    "bytes_high": 12582912,
+    "confidence": "medium",
+    "usd_low": 0.0001,
+    "usd_high": 0.0001
+  }
+}

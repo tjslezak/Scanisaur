@@ -9,6 +9,7 @@ After an intended change, regenerate the expected files with
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ GOLDEN = Path(__file__).parent / "golden"
 CATALOG = load_catalog(GOLDEN / "catalog.yaml")
 CASES = sorted(GOLDEN.glob("*/*.sql"))
 POLICY_PREFIX = "-- policy:"
+#: CURRENT_DATE() in every case, so estimates don't change from day to day.
+NOW = datetime(2026, 10, 1, 12, tzinfo=UTC)
 
 
 def _policy(sql: str) -> Policy:
@@ -32,7 +35,7 @@ def _policy(sql: str) -> Policy:
 
 def _result(case: Path) -> dict[str, Any]:
     sql = case.read_text(encoding="utf-8")
-    result = check(sql, CATALOG, policy=_policy(sql))
+    result = check(sql, CATALOG, policy=_policy(sql), now=NOW)
     # The ID and tag differ on every run; everything else must be deterministic.
     return result.model_dump(mode="json", exclude={"check_id", "tag"})
 

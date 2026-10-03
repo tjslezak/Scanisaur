@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.raw.ingest` is partitioned by `_PARTITIONTIME`, but the query doesn't filter on it, so it reads every partition (60 GB in all).",
+      "fix": "Add a filter on `_PARTITIONTIME`, for example `_PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 25
+    }
+  ],
+  "tables": [
+    "proj.raw.ingest"
+  ],
+  "estimate": {
+    "bytes_low": 60000567296,
+    "bytes_high": 60000567296,
+    "confidence": "medium",
+    "usd_low": 0.3411,
+    "usd_high": 0.3411
+  }
+}

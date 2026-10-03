@@ -36,17 +36,40 @@ class Finding(BaseModel):
     column: int | None = None
 
 
+Confidence = Literal["high", "medium", "low"]
+
+
+class Estimate(BaseModel):
+    """Bytes the query would be billed for under on-demand pricing, from metadata alone."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bytes_low: int
+    bytes_high: int
+    #: high: sizes and partitions known exactly. medium: column sizes estimated, an
+    #: unknown partition picked by `=`, or clustering that may skip blocks. low: a filter
+    #: whose effect on partitions isn't known.
+    confidence: Confidence
+    #: US dollars at the policy's on-demand price; None for capacity (Editions) pricing.
+    usd_low: float | None = None
+    usd_high: float | None = None
+
+
 class CheckResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: Literal[1] = 1
     check_id: str
     #: SQL comment to include in the executed query, so it can be matched in query history.
+    #: The same SQL always gets the same tag, so repeated queries can use BigQuery's cache.
+    #: It identifies the query, not this check; ``check_id`` identifies the check.
     tag: str
     verdict: Verdict
     findings: tuple[Finding, ...] = ()
     #: Tables the query reads, as ``project.dataset.table``.
     tables: tuple[str, ...] = ()
+    #: None when the query couldn't be analyzed, or a table it reads has no known size.
+    estimate: Estimate | None = None
 
 
 def verdict_for(findings: tuple[Finding, ...] | list[Finding]) -> Verdict:

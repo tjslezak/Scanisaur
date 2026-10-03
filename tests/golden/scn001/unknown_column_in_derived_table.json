@@ -13,5 +13,6 @@
   ],
   "tables": [
     "proj.analytics.users"
-  ]
+  ],
+  "estimate": null
 }

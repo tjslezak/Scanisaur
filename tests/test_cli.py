@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
-from scanisaur import __version__
+from scanisaur import __version__, cli
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
+from scanisaur.engine.result import Estimate
 
 runner = CliRunner()
 
@@ -46,11 +47,21 @@ def run_check(*args: str, sql: str | None = None) -> Result:
 
 class TestCheckCommand:
     def test_pass_from_stdin(self) -> None:
-        result = run_check(sql="SELECT user_id FROM events")
+        result = run_check(sql="SELECT user_id FROM events WHERE event_date = '2026-09-01'")
         assert result.exit_code == EXIT_OK
         lines = result.stdout.splitlines()
         assert lines[0] == "pass: 0 findings · reads proj.analytics.events"
-        assert re.fullmatch(r"tag: /\* scanisaur:chk_\w{18} \*/", lines[-1])
+        assert lines[-2] == "estimate: 10.5 MB-356.4 GB billed, <$0.01-$2.03 (low confidence)"
+        assert re.fullmatch(r"tag: /\* scanisaur:q_\w{20} \*/", lines[-1])
+
+    def test_nearly_equal_range_is_shown_once(self) -> None:
+        estimate = Estimate(bytes_low=10_485_760, bytes_high=10_500_000, confidence="low")
+        assert cli._estimate(estimate) == "10.5 MB billed (low confidence)"
+
+    def test_estimate_without_dollars(self) -> None:
+        result = run_check("--capacity-pricing", sql="SELECT score FROM web.trends")
+        lines = result.stdout.splitlines()
+        assert lines[-2] == "estimate: 352.3 MB billed (high confidence)"
 
     def test_block_from_file(self, tmp_path: Path) -> None:
         path = tmp_path / "query.sql"

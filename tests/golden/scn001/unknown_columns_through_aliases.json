@@ -22,5 +22,6 @@
   "tables": [
     "proj.analytics.events",
     "proj.analytics.users"
-  ]
+  ],
+  "estimate": null
 }

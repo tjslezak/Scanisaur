@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "block",
+      "message": "`DATETIME(datehour) >= '2025-06-01'` wraps the partition column `datehour` in DATETIME, so BigQuery can't use it to skip partitions of `proj.web.pageviews`. BigQuery rejects queries on this table unless a filter on `datehour` can limit the partitions.",
+      "fix": "Compare `datehour` itself with a constant, for example `datehour >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 28
+    }
+  ],
+  "tables": [
+    "proj.web.pageviews"
+  ],
+  "estimate": null
+}

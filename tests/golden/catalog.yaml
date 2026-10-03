@@ -43,3 +43,101 @@ tables:
     partitioning: {granularity: DAY}
     columns:
       payload: STRING
+  # Shaped like the benchmark's public tables (issue #10), for SCN003 and SCN004.
+  - name: proj.web.pageviews
+    rows: 70000000000
+    bytes: 2970000000000
+    partitioning: {column: datehour, granularity: DAY, required: true}
+    clustering: [wiki, title]
+    columns:
+      datehour: TIMESTAMP
+      wiki: STRING
+      title: STRING
+      views: INT64
+  - name: proj.web.trends
+    rows: 43974000
+    bytes: 3203450686
+    partitioning: {column: refresh_date, granularity: DAY}
+    columns:
+      refresh_date: DATE
+      week: DATE
+      dma_name: STRING
+      term: STRING
+      score: INT64
+      rank: INT64
+    # The last 30 days, as Google Trends keeps them; the estimate reads these sizes.
+    partitions:
+      "20260902": 106781689
+      "20260903": 106781689
+      "20260904": 106781689
+      "20260905": 106781689
+      "20260906": 106781689
+      "20260907": 106781689
+      "20260908": 106781689
+      "20260909": 106781689
+      "20260910": 106781689
+      "20260911": 106781689
+      "20260912": 106781689
+      "20260913": 106781689
+      "20260914": 106781689
+      "20260915": 106781689
+      "20260916": 106781689
+      "20260917": 106781689
+      "20260918": 106781689
+      "20260919": 106781689
+      "20260920": 106781689
+      "20260921": 106781689
+      "20260922": 106781689
+      "20260923": 106781689
+      "20260924": 106781689
+      "20260925": 106781689
+      "20260926": 106781689
+      "20260927": 106781689
+      "20260928": 106781689
+      "20260929": 106781689
+      "20260930": 106781689
+      "20261001": 106781689
+  - name: proj.web.downloads
+    rows: 3506114474210
+    bytes: 1378507468714688
+    partitioning: {column: timestamp, granularity: DAY}
+    clustering: [project]
+    columns:
+      timestamp: TIMESTAMP
+      project: STRING
+      country_code: STRING
+  - name: proj.web.daily_sample
+    rows: 180000
+    bytes: 13500000
+    partitioning: {column: day, granularity: DAY}
+    clustering: [sku]
+    columns:
+      day: DATE
+      sku: STRING
+      units: INT64
+  - name: proj.web.scores
+    rows: 900000000
+    bytes: 14400000000
+    partitioning: {column: bucket, granularity: RANGE}
+    columns:
+      bucket: INT64
+      score: FLOAT64
+  - name: proj.web.packages
+    rows: 21944630783
+    bytes: 12673694921272
+    partitioning: {column: snapshot_at, granularity: DAY}
+    clustering: [system, name, version]
+    columns:
+      snapshot_at: TIMESTAMP
+      system: STRING
+      name: STRING
+      version: STRING
+      licenses: STRING
+  - name: proj.web.store_sales
+    rows: 400000
+    bytes: 52000000
+    clustering: [region, store]
+    columns:
+      region: STRING
+      store: STRING
+      amount: NUMERIC

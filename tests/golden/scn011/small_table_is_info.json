@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "findings": [
+    {
+      "rule": "SCN011",
+      "severity": "info",
+      "message": "`proj.web.store_sales` is clustered by `region`, then `store`. The query filters `store` but doesn't limit `region` to particular values, so BigQuery may skip far fewer blocks than it would with a `region` filter as well.",
+      "fix": "If the question is about particular `region` values, filter on them with `=` or `IN`.",
+      "line": 1,
+      "column": 29
+    }
+  ],
+  "tables": [
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 29360128,
+    "confidence": "medium",
+    "usd_low": 0.0001,
+    "usd_high": 0.0002
+  }
+}

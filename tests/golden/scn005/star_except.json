@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN005",
+      "severity": "warn",
+      "message": "Selecting `* EXCEPT (params, device)` reads 4 of the 6 columns of `proj.analytics.events` in the partitions the query touches.",
+      "fix": "Select only the columns you need. For column names and types, use `scanisaur_schema_describe`, which reads no data.",
+      "line": 1,
+      "column": 39
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 712800993280,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 4.0518
+  }
+}

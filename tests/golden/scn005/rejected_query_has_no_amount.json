@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "block",
+      "message": "`proj.analytics.Orders` is partitioned by `order_date`, but the query doesn't filter on it. BigQuery rejects queries on this table unless a filter on `order_date` can limit the partitions.",
+      "fix": "Add a filter on `order_date`, for example `order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 15
+    },
+    {
+      "rule": "SCN005",
+      "severity": "warn",
+      "message": "`LIMIT 10` doesn't reduce the bytes billed: selecting `*` reads every column of `proj.analytics.Orders` in the partitions the query touches.",
+      "fix": "Select only the columns you need. For column names and types, use `scanisaur_schema_describe`, which reads no data.",
+      "line": 1,
+      "column": 15
+    }
+  ],
+  "tables": [
+    "proj.analytics.Orders"
+  ],
+  "estimate": null
+}

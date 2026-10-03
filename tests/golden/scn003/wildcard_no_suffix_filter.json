@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.ga4.events_*` matches every shard, but the query doesn't filter on `_TABLE_SUFFIX`, so it reads all of them (750 GB in all). The filter on `event_timestamp` doesn't limit which shards are read.",
+      "fix": "Add a filter on `_TABLE_SUFFIX`, for example `_TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))`, or name fewer shards with a longer prefix.",
+      "line": 2,
+      "column": 22
+    }
+  ],
+  "tables": [
+    "proj.ga4.events_*"
+  ],
+  "estimate": {
+    "bytes_low": 378600947712,
+    "bytes_high": 378600947712,
+    "confidence": "medium",
+    "usd_low": 2.1521,
+    "usd_high": 2.1521
+  }
+}

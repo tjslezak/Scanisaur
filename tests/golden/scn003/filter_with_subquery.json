@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.web.trends` is partitioned by `refresh_date`, but comparing `refresh_date` with a subquery can't limit which partitions are read, so the query reads every partition (3.2 GB in all).",
+      "fix": "Add a filter on `refresh_date`, for example `refresh_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 22
+    },
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.web.trends` is partitioned by `refresh_date`, but the query doesn't filter on it, so it reads every partition (3.2 GB in all).",
+      "fix": "Add a filter on `refresh_date`, for example `refresh_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 2,
+      "column": 57
+    }
+  ],
+  "tables": [
+    "proj.web.trends"
+  ],
+  "estimate": {
+    "bytes_low": 1250951168,
+    "bytes_high": 1250951168,
+    "confidence": "medium",
+    "usd_low": 0.0071,
+    "usd_high": 0.0071
+  }
+}

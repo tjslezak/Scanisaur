@@ -41,10 +41,22 @@ $ echo "SELECT usr_id FROM events WHERE event_date = '2026-09-01'" \
 block: 1 finding · reads proj.analytics.events
   1:8     SCN001  block  Column `usr_id` does not exist in `proj.analytics.events`.
                   fix:   Did you mean `user_id`?
-tag: /* scanisaur:chk_01m3wk05rsjdxrp063 */
+tag: /* scanisaur:q_6bg128p0yte0vj6h18d4 */
 ```
 
-It exits with 0 when the query may run, 1 when it's blocked (or warned, with `--strict`), and 2 on a usage or input error. Add `--json` for the full result.
+A query that gets past name checks also gets a cost estimate: the bytes BigQuery would bill under on-demand pricing, as a range with a confidence, and the dollars at $6.25 per TiB. [docs/estimate.md](docs/estimate.md) explains how it's worked out.
+
+```console
+$ echo "SELECT term, score FROM web.trends WHERE refresh_date BETWEEN '2026-09-25' AND '2026-10-01'" \
+    | uv run scanisaur check --catalog tests/golden/catalog.yaml
+pass: 0 findings · reads proj.web.trends
+estimate: 374.3 MB billed, <$0.01 (medium confidence)
+tag: /* scanisaur:q_mhpj9m1bfssq5f4fb3mv */
+```
+
+It exits with 0 when the query may run, 1 when it's blocked (or warned, with `--strict`), and 2 on a usage or input error. Add `--json` for the full result, or `--capacity-pricing` for bytes without dollars.
+
+The agent adds the tag at the start or end of the SQL it runs, so the query can be found in BigQuery's job history. The tag comes from the SQL itself: the same query always gets the same tag, so repeated queries can still be served from BigQuery's cache.
 
 ## License
 

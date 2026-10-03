@@ -35,6 +35,19 @@ class Partitioning:
 
 
 @dataclass(frozen=True, slots=True)
+class Partition:
+    """One partition, or one shard of a wildcard family.
+
+    ``id`` is BigQuery's partition ID: ``20260930`` for a day, ``2026093014`` for an hour,
+    ``202609`` for a month, ``2026`` for a year, the start of an integer range, or
+    ``__NULL__`` and ``__UNPARTITIONED__``. A shard's ID is its table suffix.
+    """
+
+    id: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class Table:
     project: str
     dataset: str
@@ -47,6 +60,9 @@ class Table:
     partitioning: Partitioning | None = None
     clustering: tuple[str, ...] = ()
     description: str = ""
+    #: Partitions, or a wildcard family's shards, when the catalog has them. Without them,
+    #: cost estimates can't tell how much a partition filter keeps.
+    partitions: tuple[Partition, ...] = ()
 
     @property
     def qualified_name(self) -> str:

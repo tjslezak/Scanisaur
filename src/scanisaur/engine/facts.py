@@ -8,24 +8,27 @@ are built from ``resolve()``'s qualified tree and follow what BigQuery's planner
 - A table counts only the columns its readers use, so ``SELECT *`` in a CTE whose
   reader picks one column reads one column.
 - A CTE is followed once per reference, because BigQuery evaluates each reference.
+- A struct field is read on its own: ``device.category``, or ``i.item_name`` through
+  ``UNNEST(items) AS i``, reads that field rather than the whole column, as BigQuery
+  bills it (measured in issue #22).
 """
 
 from __future__ import annotations
 
 import heapq
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, NamedTuple
 
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, find_all_in_scope, traverse_scope
 
 from scanisaur.catalog.model import Catalog, Table
-from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, resolvable
+from scanisaur.engine.parse import DIALECT, SqlParseError, describe, parse, position, resolvable
 from scanisaur.engine.resolve import Resolution, ResolveError, TableKey, resolve, stars_of
 
 ComparisonOp = Literal["=", "<", "<=", ">", ">=", "between", "in", "other"]
-Clause = Literal["where", "on", "qualify"]
+Clause = Literal["where", "on", "having", "qualify"]
 
 _COMPARISONS: dict[type[exp.Expr], ComparisonOp] = {
     exp.EQ: "=",
@@ -60,6 +63,10 @@ _NULL_TOLERANT = (exp.Coalesce, exp.If, exp.Case, exp.Is)
 
 class FactsError(ValueError):
     """The statement can't be described: it doesn't parse, resolve, or read anything."""
+
+
+class TooComplexError(FactsError):
+    """The query reads its CTEs in too many different ways to analyze."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,20 @@ class TableFacts:
     #: How many times the table is scanned with these facts; a CTE referenced twice
     #: is scanned twice.
     scans: int
+    #: The table name as the query wrote it. It differs from ``table.name`` when a narrower
+    #: wildcard such as ``events_2026*`` reads part of the ``events_*`` family.
+    name: str = ""
+    #: Where the query reads the table, as (line, column). Not compared, so identical facts
+    #: read from several places still merge, keeping the first place.
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
+    #: Columns whose values something other than these predicates may limit: a join such
+    #: as ``p.wiki = w.wiki``, a correlated ``EXISTS``, ``INTERSECT``, or a reader's filter
+    #: that can't move down to the table, as one above a ``LIMIT`` can't.
+    linked: frozenset[str] = frozenset()
+    #: The struct fields read, as paths from the column such as ("device", "category"); a
+    #: column read whole is its name alone. Every column in ``columns`` starts a path.
+    #: None when every column is read whole.
+    paths: frozenset[tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +187,31 @@ class _Item(NamedTuple):
 
     needed: frozenset[str] | None
     pushed: tuple[_Pushed, ...]
+    #: Output columns whose values the reader may limit in ways that aren't filters here:
+    #: a join, a correlated subquery, or a filter that can't move below this scope.
+    linked: frozenset[str] = frozenset()
+    #: The fields of output columns the reader reads, as paths from the column's name; a
+    #: column read whole is its name alone. None: every column it reads, whole.
+    fields: frozenset[tuple[str, ...]] | None = None
+
+
+class _Reading(NamedTuple):
+    """How one visit of a SELECT is read: what its paths and its UNNESTs depend on."""
+
+    select: exp.Select
+    scope: Scope
+    needed: frozenset[str] | None
+    fields: frozenset[tuple[str, ...]] | None
+    #: Output columns read whole whatever the reader reads of them: those GROUP BY or
+    #: ORDER BY name; None when DISTINCT or GROUP BY ALL reads every one whole.
+    whole: frozenset[str] | None
+    #: Columns only in output columns nobody reads, which BigQuery drops.
+    skipped: frozenset[int]
+
+
+_Sources = tuple[
+    dict[str, Table], dict[str, Scope], dict[str, str], dict[str, tuple[int | None, int | None]]
+]
 
 
 class _Walk:
@@ -188,6 +234,14 @@ class _Walk:
         self._visits = 0
         self._budget = len(scopes) + _MAX_REVISITS
         self._names: dict[int, list[str]] = {}
+        # Each UNNEST, with the scope that reads its elements and their alias there.
+        self._unnests = {
+            id(node): (scope, alias)
+            for scope in scopes
+            for alias, (node, _source) in scope.selected_sources.items()
+            if isinstance(node, exp.Unnest)
+        }
+        self._unnest_fields_seen: dict[tuple[int, object], frozenset[tuple[str, ...]] | None] = {}
         self.joins: list[Join] = []
         self._schedule(scopes[-1], None, (), 1)
 
@@ -198,19 +252,30 @@ class _Walk:
             for item, runs in self._pending.pop(key).values():
                 self._visits += 1
                 if self._visits > self._budget:
-                    raise FactsError("the query reads its CTEs in too many ways to analyze")
+                    raise TooComplexError("the query reads its CTEs in too many ways to analyze")
                 self._visit(scope, item, runs)
 
     def table_facts(self) -> tuple[TableFacts, ...]:
-        """Identical facts from several paths become one entry with their scans added."""
+        """Identical facts from several paths become one entry with their scans added,
+        at the earliest position any of them is written."""
         scans: dict[TableFacts, int] = {}
+        first: dict[TableFacts, TableFacts] = {}
         for facts in self._visited:
             unscanned = replace(facts, scans=0)
             scans[unscanned] = scans.get(unscanned, 0) + facts.scans
-        return tuple(replace(facts, scans=count) for facts, count in scans.items())
+            seen = first.get(unscanned)
+            if seen is None or _sort_key(facts.position) < _sort_key(seen.position):
+                first[unscanned] = facts
+        return tuple(replace(first[facts], scans=count) for facts, count in scans.items())
 
     def _schedule(
-        self, scope: Scope, needed: frozenset[str] | None, pushed: Iterable[_Pushed], runs: int
+        self,
+        scope: Scope,
+        needed: frozenset[str] | None,
+        pushed: Iterable[_Pushed],
+        runs: int,
+        linked: frozenset[str] = frozenset(),
+        fields: frozenset[tuple[str, ...]] | None = None,
     ) -> None:
         position = self._position.get(id(scope))
         if position is None:
@@ -221,8 +286,15 @@ class _Walk:
         if bucket is None:
             bucket = self._pending[id(scope)] = {}
             heapq.heappush(self._queue, (position, id(scope)))
-        item, count = bucket.get(key, (_Item(needed, pushed), 0))
-        bucket[key] = (item, count + runs)
+        found = bucket.get(key)
+        if found is None:
+            bucket[key] = (_Item(needed, pushed, linked, fields), runs)
+            return
+        # Links and fields don't split visits: readers that differ only in them share one
+        # visit, which reads what any of them does.
+        item, count = found
+        merged = None if item.fields is None or fields is None else item.fields | fields
+        bucket[key] = (item._replace(linked=item.linked | linked, fields=merged), count + runs)
 
     def _output_names(self, expression: exp.Expr) -> list[str]:
         """A query's output column names. A long UNION chain shares its leftmost
@@ -247,71 +319,100 @@ class _Walk:
             self._visit_select(scope, expression, item, runs)
         else:  # parentheses around a query, UNNEST, table functions: only what's inside reads
             for child in [*scope.derived_table_scopes, *scope.subquery_scopes, *scope.udtf_scopes]:
-                self._schedule(child, None, (), runs)
+                self._schedule(child, None, (), runs, item.linked)
 
     def _visit_set_operation(
         self, scope: Scope, operation: exp.SetOperation, item: _Item, runs: int
     ) -> None:
         recursive = _is_recursive(scope)
-        pushed = item.pushed
+        pushed, linked = item.pushed, item.linked
         if recursive or _limited(operation):
-            pushed = ()  # the filter runs on rows the recursion or the LIMIT produced
+            # The filter runs on rows the recursion or the LIMIT produced.
+            pushed, linked = (), linked | _filtered_names(item.pushed)
+        names = self._output_names(operation)
+        if not isinstance(operation, exp.Union):  # INTERSECT and EXCEPT match other rows
+            linked = linked | frozenset(names)
         # UNION DISTINCT, INTERSECT and EXCEPT compare whole rows, so every column is read.
         prunes = (
             isinstance(operation, exp.Union)
             and not operation.args.get("distinct")
             and not recursive
         )
-        names = self._output_names(operation)
-        needed = item.needed
+        needed, fields = item.needed, item.fields
         if needed is not None:  # ORDER BY on the UNION reads its columns in every branch
-            needed = needed | _named_in(operation.args.get("order"), set(names))
+            ordered = _named_in(operation.args.get("order"), set(names))
+            needed = needed | ordered
+            if fields is not None:
+                fields = fields | {(name,) for name in ordered}
         for branch in scope.set_operation_scopes:
             branch_names = self._output_names(branch.expression)
             if operation.args.get("by_name"):  # BY NAME and CORRESPONDING match by name
                 renamed = {name: name for name in names if name in branch_names}
             else:
                 renamed = dict(zip(names, branch_names, strict=False))
-            branch_needed = None
+            branch_needed = branch_fields = None
             if needed is not None and prunes:
                 branch_needed = frozenset(renamed[n] for n in needed if n in renamed)
+                if fields is not None:
+                    branch_fields = frozenset(
+                        (renamed[path[0]], *path[1:]) for path in fields if path[0] in renamed
+                    )
             branch_pushed = [
                 p._replace(condition=_rename(p.condition, p.alias, renamed)) for p in pushed
             ]
-            self._schedule(branch, branch_needed, branch_pushed, runs)
+            branch_linked = frozenset(renamed[n] for n in linked if n in renamed)
+            self._schedule(branch, branch_needed, branch_pushed, runs, branch_linked, branch_fields)
 
     def _visit_select(self, scope: Scope, select: exp.Select, item: _Item, runs: int) -> None:
-        tables, derived = self._sources(scope)
+        tables, derived, names, positions = self._sources(scope)
         nullable = _null_supplying(select)
         predicates: dict[str, list[Predicate]] = {alias: [] for alias in tables}
         pushdown: dict[str, list[_Pushed]] = {alias: [] for alias in derived}
-        inherited = [(clause, condition, None) for clause, condition in _inherited(select, item)]
-        for clause, condition, filtered in [*_conditions(select), *inherited]:
-            owners = {column.table for column in _local_columns(condition)}
-            if len(owners) != 1:
-                continue
-            (owner,) = owners
-            if filtered is not None and owner not in filtered:
-                continue
-            # On a side an outer join fills with NULLs, `u.id IS NULL` keeps the
-            # unmatched rows rather than filtering u.
-            if owner in nullable and not _null_rejecting(condition):
-                continue
+        inherited, dropped = _inherited(select, item)
+        linked = _Links(tables.keys() | derived.keys())
+        linked.add(_producers(select, item.linked | dropped))
+        conditions = [*_conditions(select), *((clause, c, None) for clause, c in inherited)]
+        for clause, condition, filtered in conditions:
+            local = _local_columns(condition)
+            linked.add(_correlated(condition, linked.sources, local))
+            owner = _filtered_source(condition, local, filtered, nullable)
             if owner in tables:
                 predicate = _classify(condition, clause)
                 if predicate is not None:
                     predicates[owner].append(predicate)
+                    continue
             elif owner in derived and clause != "qualify":
                 pushdown[owner].append(_Pushed(clause, condition, owner))
+                continue
+            # Not a filter on one source, as a join condition or a filter that runs too late
+            # isn't, but it may still limit the values of the columns it reads.
+            linked.add(local)
 
-        reads = _read_columns(scope, select, item.needed)
+        named = _named_by_clauses(select)
+        reads = _read_columns(scope, select, item.needed, named)
+        group = select.args.get("group")
+        everything = select.args.get("distinct") or (group is not None and group.args.get("all"))
+        reading = _Reading(
+            select,
+            scope,
+            item.needed,
+            item.fields,
+            whole=None if everything else named,
+            skipped=_columns_in(reads.unused),
+        )
+        paths: dict[str, set[tuple[str, ...]]] = {}
+        for column in reads.columns:
+            paths.setdefault(column.table, set()).update(self._read_paths(column, reading))
         stars = stars_of(select)
         for alias, table in tables.items():
             starred = [s for s in stars if s.qualifier.lower() in ("", alias.lower())]
+            table_paths: frozenset[tuple[str, ...]] | None = None
             if alias in reads.whole_rows:
                 columns = frozenset(column.name.lower() for column in table.columns)
             else:
                 columns = frozenset(c.name.lower() for c in reads.columns if c.table == alias)
+                if any(len(path) > 1 for path in paths.get(alias, ())):
+                    table_paths = frozenset(paths[alias])
             self._visited.append(
                 TableFacts(
                     table=table,
@@ -321,6 +422,10 @@ class _Walk:
                     star_except=frozenset(e.name.lower() for s in starred for e in s.excepted),
                     predicates=tuple(predicates[alias]),
                     scans=runs,
+                    linked=linked.of(alias),
+                    name=names[alias],
+                    position=positions[alias],
+                    paths=table_paths,
                 )
             )
         if id(scope) not in self._joined:
@@ -328,30 +433,85 @@ class _Walk:
             self.joins.extend(_joins(scope, select, tables))
 
         for alias, source in derived.items():
+            links = linked.of(alias)
             if _is_recursive(source):
-                self._schedule(source, None, (), runs)
+                self._schedule(source, None, (), runs, links | _filtered_names(pushdown[alias]))
             elif alias in reads.whole_rows:
-                self._schedule(source, None, pushdown[alias], runs)
+                self._schedule(source, None, pushdown[alias], runs, links)
             else:
                 used = frozenset(c.name.lower() for c in reads.columns if c.table == alias)
-                self._schedule(source, used, pushdown[alias], runs)
+                fields = frozenset(paths.get(alias, ()))
+                self._schedule(source, used, pushdown[alias], runs, links, fields)
         for child in [*scope.subquery_scopes, *scope.udtf_scopes]:
             # BigQuery drops output columns nobody reads, with any subquery inside them.
             if not any(_within(child.expression, projection) for projection in reads.unused):
-                self._schedule(child, None, (), runs)
+                self._schedule(child, _needed_by(child), (), runs)
 
-    def _sources(self, scope: Scope) -> tuple[dict[str, Table], dict[str, Scope]]:
-        """Catalog tables and derived sources (CTEs, subqueries) by alias."""
+    def _read_paths(self, column: exp.Column, reading: _Reading) -> set[tuple[str, ...]]:
+        """What reading ``column`` here reads of it: the struct fields written after it,
+        and those the reader reads of the output column it is, or of an array's elements
+        through UNNEST."""
+        top, chain = _field_chain(column)
+        path = (column.name.lower(), *chain)
+        parent = top.parent
+        if isinstance(parent, exp.Unnest):
+            inner = self._unnest_fields(parent, reading)
+        else:
+            projection = parent if isinstance(parent, exp.Alias) else top
+            inner = None
+            if projection.parent is reading.select and projection.arg_key == "expressions":
+                inner = _output_fields(projection.alias_or_name.lower(), reading)
+        if inner is None:
+            return {path}
+        return {(*path, *field) for field in inner}
+
+    def _unnest_fields(
+        self, unnest: exp.Unnest, reading: _Reading
+    ) -> frozenset[tuple[str, ...]] | None:
+        """The fields of an array's elements the query reads through ``unnest``, as paths
+        within an element; None when it reads whole elements, or that isn't known. Fields
+        only in output columns nobody reads don't count."""
+        found = self._unnests.get(id(unnest))
+        if found is None or len(unnest.expressions) != 1:
+            return None
+        scope, alias = found
+        # In this SELECT, what is dropped depends on how this visit is read; in a
+        # subquery, such as `(SELECT value FROM UNNEST(params) ...)`, on how it is used.
+        key = (id(unnest), reading.needed if scope is reading.scope else "subquery")
+        if key not in self._unnest_fields_seen:
+            if scope is reading.scope:
+                skipped = reading.skipped
+            else:
+                skipped = _skipped_columns(scope.expression, _needed_by(scope))
+            self._unnest_fields_seen[key] = _element_fields(unnest, scope, alias, skipped)
+        return self._unnest_fields_seen[key]
+
+    def _sources(self, scope: Scope) -> _Sources:
+        """Catalog tables and derived sources (CTEs, subqueries) by alias, with the name
+        and position each table is written with."""
         tables: dict[str, Table] = {}
         derived: dict[str, Scope] = {}
+        names: dict[str, str] = {}
+        positions: dict[str, tuple[int | None, int | None]] = {}
         for alias, (_node, source) in scope.selected_sources.items():
             if isinstance(source, exp.Table):
                 table = self._references.get((source.catalog, source.db, source.name))
                 if table is not None:  # INFORMATION_SCHEMA views and table functions aren't
                     tables[alias] = table
+                    names[alias] = source.name
+                    # A name completed from the catalog's defaults has no position of its
+                    # own; the table name inside it does.
+                    where = position(source)
+                    positions[alias] = where if where[0] is not None else position(source.this)
             elif isinstance(source, Scope) and isinstance(source.expression, exp.Query):
                 derived[alias] = source
-        return tables, derived
+        return tables, derived, names, positions
+
+
+def _sort_key(position: tuple[int | None, int | None]) -> tuple[float, float]:
+    """Order positions as written; an unknown position sorts last."""
+    line, column = position
+    return (line if line is not None else float("inf"), column if column is not None else 0)
 
 
 def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[str]]]:
@@ -363,7 +523,9 @@ def _joins_in_order(select: exp.Select) -> Iterator[tuple[exp.Join, frozenset[st
 
 
 def _conditions(select: exp.Select) -> Iterator[tuple[Clause, exp.Expr, frozenset[str] | None]]:
-    """Each conjunct of WHERE, ON and QUALIFY, with the sources it can filter (None: any)."""
+    """Each conjunct of WHERE, ON, HAVING and QUALIFY, with the sources it can filter
+    (None: any). Only HAVING conditions on grouping columns filter: BigQuery applies them
+    before grouping, so they can prune partitions."""
     where = select.args.get("where")
     if where is not None:
         yield from (("where", c, None) for c in _conjuncts(where.this))
@@ -375,9 +537,28 @@ def _conditions(select: exp.Select) -> Iterator[tuple[Clause, exp.Expr, frozense
             "FULL": frozenset(),
         }.get(join.side)
         yield from (("on", c, filtered) for c in _conjuncts(join.args.get("on")))
+    yield from (("having", c, None if grouping else frozenset()) for c, grouping in _having(select))
     qualify = select.args.get("qualify")
     if qualify is not None:
         yield from (("qualify", c, None) for c in _conjuncts(qualify.this))
+
+
+def _having(select: exp.Select) -> Iterator[tuple[exp.Expr, bool]]:
+    """Each HAVING conjunct, and whether it tests only plain GROUP BY columns, without
+    aggregates."""
+    having, group = select.args.get("having"), select.args.get("group")
+    if having is None:
+        return
+    keys: set[tuple[str, str]] = set()
+    # Rolled-up rows add NULL keys the filter also sees, so nothing filters before them.
+    if group is not None and not any(
+        group.args.get(k) for k in ("rollup", "cube", "grouping_sets")
+    ):
+        keys = {_key(c) for c in group.expressions if isinstance(c, exp.Column)}
+    for condition in _conjuncts(having.this):
+        columns = _local_columns(condition)
+        grouping = bool(columns) and all(_key(c) in keys for c in columns)
+        yield condition, grouping and condition.find(exp.AggFunc, exp.Window) is None
 
 
 def _null_supplying(select: exp.Select) -> frozenset[str]:
@@ -392,8 +573,12 @@ def _null_supplying(select: exp.Select) -> frozenset[str]:
 
 
 def _null_rejecting(condition: exp.Expr) -> bool:
-    """True when the condition is never true for NULL, as a plain comparison isn't."""
-    return isinstance(condition, _NULL_REJECTING) and condition.find(*_NULL_TOLERANT) is None
+    """True when the condition is never true for NULL, as a plain comparison isn't. A
+    function such as COALESCE can turn the column's NULL into a match; one that only sees
+    constants, such as ``IFNULL(@wiki, 'en')``, can't."""
+    if not isinstance(condition, _NULL_REJECTING):
+        return False
+    return not any(node.find(exp.Column) for node in condition.find_all(*_NULL_TOLERANT))
 
 
 def _is_recursive(scope: Scope) -> bool:
@@ -430,6 +615,17 @@ def _named_in(clause: exp.Expr | None, names: set[str]) -> frozenset[str]:
     )
 
 
+def _needed_by(child: Scope) -> frozenset[str] | None:
+    """The output columns of a subquery that its reader uses: none for ``EXISTS``, which
+    only asks whether a row exists, so ``EXISTS (SELECT * ...)`` reads only what its own
+    conditions use; all of them otherwise."""
+    query = child.expression
+    parent = query.parent
+    while isinstance(parent, exp.Subquery):
+        parent = parent.parent
+    return frozenset() if isinstance(parent, exp.Exists) else None
+
+
 def _within(node: exp.Expr, ancestor: exp.Expr) -> bool:
     parent = node.parent
     while parent is not None:
@@ -439,15 +635,112 @@ def _within(node: exp.Expr, ancestor: exp.Expr) -> bool:
     return False
 
 
+def _field_chain(column: exp.Column) -> tuple[exp.Expr, tuple[str, ...]]:
+    """The outermost struct field access on ``column``, as ``e.device.web_info.browser``
+    on ``e.device``, and the fields it goes through."""
+    node: exp.Expr = column
+    names: list[str] = []
+    while isinstance(node.parent, exp.Dot) and node.parent.this is node:
+        field_name = node.parent.expression
+        if not isinstance(field_name, exp.Identifier):
+            break
+        names.append(field_name.name.lower())
+        node = node.parent
+    return node, tuple(names)
+
+
+def _output_fields(name: str, reading: _Reading) -> frozenset[tuple[str, ...]] | None:
+    """The fields of output column ``name`` the reader reads; None when it reads the
+    whole column."""
+    fields, whole = reading.fields, reading.whole
+    if fields is None or whole is None or name in whole:
+        return None
+    inner = frozenset(path[1:] for path in fields if path[0] == name)
+    if not inner or () in inner:
+        return None
+    return inner
+
+
+def _element_fields(
+    unnest: exp.Unnest, scope: Scope, alias: str, skipped: frozenset[int]
+) -> frozenset[tuple[str, ...]] | None:
+    """The element fields that ``scope`` reads of ``unnest``, which it names ``alias``."""
+    table_alias = unnest.args.get("alias")
+    names = table_alias.columns if isinstance(table_alias, exp.TableAlias) else []
+    # `UNNEST(items) AS i` names each element i; without a name, a struct element's
+    # fields are read as columns.
+    element = names[0].name.lower() if names else None
+    offset = unnest.args.get("offset")
+    position = offset.name.lower() if isinstance(offset, exp.Expr) else None
+    fields: set[tuple[str, ...]] = set()
+    for column in scope.columns:
+        if column.table != alias or isinstance(column, exp.Pseudocolumn) or id(column) in skipped:
+            continue
+        name = column.name.lower()
+        if name == position:
+            continue  # WITH OFFSET: the element's position, not its data
+        _top, chain = _field_chain(column)
+        if element is None:
+            fields.add((name, *chain))
+        elif name == element and chain:
+            fields.add(chain)
+        else:
+            return None  # the whole element, as in TO_JSON_STRING(i)
+    if any(n.name == alias for n in find_all_in_scope(scope.expression, exp.TableColumn)):
+        return None
+    select = scope.expression
+    for projection in select.expressions if isinstance(select, exp.Select) else []:
+        # A star qualify() couldn't expand (duplicate names) reads whole elements.
+        if isinstance(projection, exp.Star) or (
+            isinstance(projection, exp.Column)
+            and isinstance(projection.this, exp.Star)
+            and projection.table == alias
+        ):
+            return None
+    return frozenset(fields) or None
+
+
+def _named_by_clauses(select: exp.Select) -> frozenset[str]:
+    """Output columns that GROUP BY, ORDER BY, HAVING or QUALIFY name by alias, as in
+    ``GROUP BY day`` where ``day`` is an output column."""
+    aliases = {p.alias_or_name.lower() for p in select.expressions}
+    named: set[str] = set()
+    for key in _ALIAS_CLAUSES:
+        clause = select.args.get(key)
+        if clause is not None:
+            named |= {
+                c.name.lower()
+                for c in find_all_in_scope(clause, exp.Column)
+                if not c.table and c.name.lower() in aliases
+            }
+    return frozenset(named)
+
+
+def _columns_in(projections: Iterable[exp.Expr]) -> frozenset[int]:
+    return frozenset(id(n) for p in projections for n in p.find_all(exp.Column, exp.TableColumn))
+
+
+def _skipped_columns(expression: exp.Expr, needed: frozenset[str] | None) -> frozenset[int]:
+    """Columns only in the output columns of ``expression`` that a reader needing
+    ``needed`` doesn't use."""
+    if needed is None or not isinstance(expression, exp.Select) or expression.args.get("distinct"):
+        return frozenset()
+    return _columns_in(_unused(expression, needed, _named_by_clauses(expression)))
+
+
 def _from_alias(select: exp.Select) -> str:
     from_ = select.args.get("from_")
     return from_.this.alias_or_name if isinstance(from_, exp.From) else ""
 
 
-def _inherited(select: exp.Select, item: _Item) -> Iterator[tuple[Clause, exp.Expr]]:
-    """The reader's filters, rewritten in terms of this SELECT's own sources."""
+def _inherited(
+    select: exp.Select, item: _Item
+) -> tuple[list[tuple[Clause, exp.Expr]], frozenset[str]]:
+    """The reader's filters, rewritten in terms of this SELECT's own sources, and the
+    output columns read by those that can't be: they still limit what the reader gets."""
     if _limited(select) or select.args.get("qualify"):
-        return  # the reader's filter runs on rows these clauses already picked
+        # The reader's filter runs on rows these clauses already picked.
+        return [], _filtered_names(item.pushed)
     pushable = _pushable(select)
     # A filter can move below window functions only if it keeps or drops whole
     # partitions: every column it reads must be in every window's PARTITION BY.
@@ -456,13 +749,82 @@ def _inherited(select: exp.Select, item: _Item) -> Iterator[tuple[Clause, exp.Ex
         {_key(c) for c in w.args.get("partition_by") or [] if isinstance(c, exp.Column)}
         for w in windows
     ]
-    for clause, condition, alias in item.pushed:
-        translated = _translate(condition, alias, pushable)
-        if translated is None:
-            continue
-        if any(not {_key(c) for c in _local_columns(translated)} <= k for k in keys):
-            continue
-        yield clause, translated
+    kept: list[tuple[Clause, exp.Expr]] = []
+    dropped: list[_Pushed] = []
+    for pushed in item.pushed:
+        translated = _translate(pushed.condition, pushed.alias, pushable)
+        if translated is None or any(
+            not {_key(c) for c in _local_columns(translated)} <= k for k in keys
+        ):
+            dropped.append(pushed)
+        else:
+            kept.append((pushed.clause, translated))
+    return kept, _filtered_names(dropped)
+
+
+def _filtered_names(pushed: Iterable[_Pushed]) -> frozenset[str]:
+    """The output columns these filters read."""
+    return frozenset(
+        column.name.lower()
+        for p in pushed
+        for column in p.condition.find_all(exp.Column)
+        if column.table == p.alias
+    )
+
+
+def _producers(select: exp.Select, names: frozenset[str]) -> list[exp.Column]:
+    """The columns the output columns ``names`` are computed from, including those a
+    correlated subquery in them reads."""
+    if not names:
+        return []
+    return [
+        column
+        for projection in select.expressions
+        if projection.alias_or_name.lower() in names
+        for column in projection.find_all(exp.Column)
+    ]
+
+
+class _Links:
+    """Columns of each source whose values something other than a filter on that source
+    may limit."""
+
+    def __init__(self, sources: Iterable[str]) -> None:
+        self._columns: dict[str, set[str]] = {alias: set() for alias in sources}
+
+    @property
+    def sources(self) -> Iterable[str]:
+        return self._columns.keys()
+
+    def add(self, columns: Iterable[exp.Column]) -> None:
+        for column in columns:
+            found = self._columns.get(column.table)
+            if found is not None:
+                found.add(column.name.lower())
+
+    def of(self, alias: str) -> frozenset[str]:
+        return frozenset(self._columns.get(alias, ()))
+
+
+def _filtered_source(
+    condition: exp.Expr,
+    local: list[exp.Column],
+    filtered: frozenset[str] | None,
+    nullable: frozenset[str],
+) -> str | None:
+    """The one source the condition filters, if any. Outer joins count as limiting both
+    sides: a WHERE filter on the other side can make them inner joins."""
+    owners = {column.table for column in local}
+    if len(owners) != 1:
+        return None
+    (owner,) = owners
+    if filtered is not None and owner not in filtered:
+        return None
+    # On a side an outer join fills with NULLs, `u.id IS NULL` keeps the
+    # unmatched rows rather than filtering u.
+    if owner in nullable and not _null_rejecting(condition):
+        return None
+    return owner
 
 
 def _pushable(select: exp.Select) -> dict[str, exp.Expr]:
@@ -472,8 +834,8 @@ def _pushable(select: exp.Select) -> dict[str, exp.Expr]:
     if any(isinstance(g, exp.Rollup | exp.Cube | exp.GroupingSets) for g in group_items):
         return {}  # their total rows have NULL keys and read every input row
     projections = {p.alias_or_name.lower(): p.unalias() for p in select.expressions}
-    if group is None and any(p.find(exp.AggFunc) for p in projections.values()):
-        return {}  # one row for the whole input
+    if group is None and _select_aggregated(select):
+        return {}  # one row for the whole input; a window aggregate keeps every row
     alias_keys = _named_in(group, set(projections))
     pushable: dict[str, exp.Expr] = {}
     for name, projection in projections.items():
@@ -531,14 +893,13 @@ class _Reads(NamedTuple):
     unused: list[exp.Expr]
 
 
-def _read_columns(scope: Scope, select: exp.Select, needed: frozenset[str] | None) -> _Reads:
+def _read_columns(
+    scope: Scope, select: exp.Select, needed: frozenset[str] | None, named: frozenset[str]
+) -> _Reads:
     columns = [c for c in scope.columns if not isinstance(c, exp.Pseudocolumn)]
-    unused = [] if needed is None or select.args.get("distinct") else _unused(select, needed)
-    skipped = {
-        id(node)
-        for projection in unused
-        for node in projection.find_all(exp.Column, exp.TableColumn)
-    }
+    distinct = select.args.get("distinct")
+    unused = [] if needed is None or distinct else _unused(select, needed, named)
+    skipped = _columns_in(unused)
     # qualify() turns a whole-row reference such as TO_JSON_STRING(t) into a TableColumn.
     whole = {
         node.name
@@ -555,18 +916,9 @@ def _read_columns(scope: Scope, select: exp.Select, needed: frozenset[str] | Non
     return _Reads([c for c in columns if id(c) not in skipped], whole_rows, unused)
 
 
-def _unused(select: exp.Select, needed: frozenset[str]) -> list[exp.Expr]:
+def _unused(select: exp.Select, needed: frozenset[str], named: frozenset[str]) -> list[exp.Expr]:
     """Output columns the reader doesn't use, and no clause of the SELECT names."""
-    aliases = {p.alias_or_name.lower() for p in select.expressions}
-    used = set(needed)
-    for key in _ALIAS_CLAUSES:  # e.g. GROUP BY day, where day is an output column
-        clause = select.args.get(key)
-        if clause is not None:
-            used |= {
-                c.name.lower()
-                for c in find_all_in_scope(clause, exp.Column)
-                if not c.table and c.name.lower() in aliases
-            }
+    used = needed | named
     return [
         p
         for p in select.expressions
@@ -595,6 +947,32 @@ def _operands(condition: exp.Expr | None, connector: type[exp.Connector]) -> Ite
 def _local_columns(node: exp.Expr) -> list[exp.Column]:
     """Columns in ``node`` itself, not in a subquery inside it."""
     return [c for c in find_all_in_scope(node, exp.Column) if not isinstance(c.this, exp.Star)]
+
+
+def _correlated(
+    condition: exp.Expr, sources: Iterable[str], local: list[exp.Column]
+) -> Iterator[exp.Column]:
+    """Columns of these sources that a subquery in the condition reads, as ``p.wiki`` in
+    ``EXISTS (SELECT 1 FROM wikis w WHERE w.wiki = p.wiki)``. ``local`` holds the
+    condition's own columns."""
+    if condition.find(exp.Query) is None:
+        return
+    aliases = set(sources)
+    own = {id(column) for column in local}
+    for column in condition.find_all(exp.Column):
+        if id(column) in own or column.table not in aliases:
+            continue
+        node = column.parent
+        while node is not None and node is not condition:  # a nearer source of that name?
+            if isinstance(node, exp.Select) and column.table in _source_aliases(node):
+                break
+            node = node.parent
+        else:
+            yield column
+
+
+def _source_aliases(select: exp.Select) -> set[str]:
+    return {_from_alias(select)} | {join.alias_or_name for join in select.args.get("joins") or []}
 
 
 def _is_constant(node: exp.Expr) -> bool:

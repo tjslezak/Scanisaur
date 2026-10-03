@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.analytics.events` is partitioned by `event_date`, but `event_date IS NOT NULL` can't limit which partitions are read, so the query reads every partition (2.1 TB in all).",
+      "fix": "Add a filter on `event_date`, for example `event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 1,
+      "column": 21
+    }
+  ],
+  "tables": [
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 356400496640,
+    "bytes_high": 356400496640,
+    "confidence": "medium",
+    "usd_low": 2.0259,
+    "usd_high": 2.0259
+  }
+}

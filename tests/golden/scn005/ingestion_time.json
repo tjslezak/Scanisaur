@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN005",
+      "severity": "warn",
+      "message": "`LIMIT 10` doesn't reduce the bytes billed: selecting `*` reads every column of `proj.raw.ingest` in the partitions the query touches.",
+      "fix": "Select only the columns you need. For column names and types, use `scanisaur_schema_describe`, which reads no data.",
+      "line": 1,
+      "column": 15
+    }
+  ],
+  "tables": [
+    "proj.raw.ingest"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 60000567296,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 0.3411
+  }
+}

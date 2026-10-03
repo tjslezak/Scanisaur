@@ -65,7 +65,7 @@ It also extracts join facts, and the `LIMIT` and aggregation of the effective ou
 
 ## Open questions for the BigQuery spikes
 
-- **Which wrappers defeat partition pruning?** `DATE(ts)`, `CAST(...)` and `TIMESTAMP_TRUNC(ts, DAY)` all come through as wrappers. Before SCN004 ships, dry runs on a partitioned table must show which of them actually prevent pruning ([#1](https://github.com/tjslezak/Scanisaur/issues/1), [#3](https://github.com/tjslezak/Scanisaur/issues/3)).
+- **Which wrappers defeat partition pruning?** `DATE(ts)`, `CAST(...)` and `TIMESTAMP_TRUNC(ts, DAY)` all come through as wrappers. Before SCN004 ships, dry runs on a partitioned table must show which of them actually prevent pruning ([#1](https://github.com/tjslezak/Scanisaur/issues/1), [#3](https://github.com/tjslezak/Scanisaur/issues/3)). *Answered:* dry runs showed that most wrappers still prune; [SCN004](../rules/scn004.md) lists what was measured.
 - **Are only referenced struct fields billed?** If BigQuery bills only the referenced leaf fields of a `STRUCT`, the estimator needs field-level facts instead of the top-level column.
 
 ## sqlglot 30 notes for contributors

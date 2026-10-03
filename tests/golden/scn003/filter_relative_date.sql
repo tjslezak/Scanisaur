@@ -1,0 +1,2 @@
+SELECT user_id FROM events
+WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)

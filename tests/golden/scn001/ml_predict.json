@@ -4,5 +4,6 @@
   "findings": [],
   "tables": [
     "proj.analytics.users"
-  ]
+  ],
+  "estimate": null
 }

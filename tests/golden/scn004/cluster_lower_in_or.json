@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN004",
+      "severity": "warn",
+      "message": "`LOWER(project) = 'requests' OR LOWER(project) = 'urllib3'` wraps the cluster column `project` in LOWER, so BigQuery can't use the clustering of `proj.web.downloads` to skip blocks.",
+      "fix": "Compare `project` itself, for example `project = 'requests' OR project = 'urllib3'`, if the stored values are written that way.",
+      "line": 1,
+      "column": 26
+    }
+  ],
+  "tables": [
+    "proj.web.downloads"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 703278193049600,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 3997.6737
+  }
+}

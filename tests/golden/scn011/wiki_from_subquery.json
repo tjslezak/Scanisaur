@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "findings": [],
+  "tables": [
+    "proj.web.pageviews",
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 33554432,
+    "bytes_high": 2970023362560,
+    "confidence": "low",
+    "usd_low": 0.0002,
+    "usd_high": 16.8826
+  }
+}
