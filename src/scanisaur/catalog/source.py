@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -29,6 +30,8 @@ class Snapshot:
     catalog: Catalog
     #: Identifies the metadata a check ran against, so the check can be reproduced.
     snapshot_id: str
+    #: When the metadata was read from the warehouse; None for a fixture.
+    fetched_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
