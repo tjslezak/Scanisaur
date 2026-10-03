@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN007",
+      "severity": "warn",
+      "message": "`COUNT(u.user_id)` counts each row of `u` (users) once for every row of `o` (Orders) it matches, as `user_id` isn't a unique key of `o`. The result is wrong, and BigQuery gives no error.",
+      "fix": "Reduce `o` to one row per `user_id` before joining it, with GROUP BY in a subquery, or compute `COUNT(u.user_id)` in a query that doesn't join `o`. To count rows of `u`, use `COUNT(DISTINCT u.user_id)`.",
+      "line": 1,
+      "column": 16
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.analytics.Orders",
+    "proj.analytics.order_items"
+  ],
+  "estimate": {
+    "bytes_low": 3802136576,
+    "bytes_high": 14512291840,
+    "confidence": "low",
+    "usd_low": 0.0216,
+    "usd_high": 0.0825
+  }
+}

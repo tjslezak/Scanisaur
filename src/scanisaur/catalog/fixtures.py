@@ -10,8 +10,10 @@ Example::
         bytes: 2100000000000
         partitioning: {column: event_date, granularity: DAY}
         clustering: [user_id]
+        keys: [[event_id]]       # optional: column sets unique in the table
         columns:
           event_date: DATE
+          event_id: STRING
           user_id: STRING
         partitions:              # optional: partition ID (or shard suffix) -> bytes
           "20260930": 7000000000
@@ -82,6 +84,7 @@ class _TableSpec(_Spec):
     description: str = ""
     columns: dict[str, str] = Field(min_length=1)
     partitions: dict[str, int] = {}
+    keys: tuple[tuple[str, ...], ...] | None = None
 
     @field_validator("columns")
     @classmethod
@@ -121,6 +124,12 @@ class _TableSpec(_Spec):
         unknown = [name for name in referenced if name.lower() not in names]
         if unknown:
             raise ValueError(f"partitioning or clustering names unknown columns: {unknown}")
+        for key in self.keys or ():
+            if not key:
+                raise ValueError("a key needs at least one column")
+            unknown = [name for name in key if name.lower() not in names]
+            if unknown:
+                raise ValueError(f"keys name unknown columns: {unknown}")
         if self.partitions and self.partitioning is None and not self.name.endswith("*"):
             raise ValueError("only partitioned tables and wildcard families have partitions")
         if self.partitioning is not None:
@@ -158,6 +167,7 @@ class _TableSpec(_Spec):
             clustering=self.clustering,
             description=self.description,
             partitions=tuple(Partition(pid, size) for pid, size in self.partitions.items()),
+            keys=self.keys,
         )
 
 

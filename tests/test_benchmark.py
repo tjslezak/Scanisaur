@@ -1,6 +1,7 @@
 """The dry-run benchmark's harness (benchmark/run.py), without the network."""
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -325,11 +326,38 @@ tables:
         assert outcome.billed == (processed, processed + MIN_BILLED_BYTES)
         assert (outcome.ratio, outcome.in_range) == (1.0, True)
 
+    def test_with_keys(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.yaml"
+        path.write_text(self.CATALOG + self.SMALL, encoding="utf-8")
+        tables = tmp_path / "tables.yaml"
+        tables.write_text("tables: [o.d.t, o.d.s]\nkeys: {o.d.s: [[N]]}\n", encoding="utf-8")
+        t, s = run.with_keys(load_catalog(path), tables).tables
+        assert (t.keys, s.keys) == (None, (("N",),))
+        tables.write_text("tables: [o.d.t]\n", encoding="utf-8")
+        assert run.with_keys(load_catalog(path), tables).tables[0].keys is None
+
+    @pytest.mark.parametrize(
+        ("keys", "reason"),
+        [
+            ("{o.d.t: [[nope]]}", "keys of o.d.t name unknown columns: ['nope']"),
+            ("{o.d.x: [[n]]}", "tables not in the catalog: ['o.d.x']"),
+        ],
+    )
+    def test_with_bad_keys(self, tmp_path: Path, keys: str, reason: str) -> None:
+        path = tmp_path / "catalog.yaml"
+        path.write_text(self.CATALOG, encoding="utf-8")
+        tables = tmp_path / "tables.yaml"
+        tables.write_text(f"tables: [o.d.t]\nkeys: {keys}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            run.with_keys(load_catalog(path), tables)
+
     def test_report_command(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         paths = {
-            name: tmp_path / name.lower() for name in ("CATALOG", "QUERIES", "DRY_RUNS", "REPORT")
+            name: tmp_path / name.lower()
+            for name in ("CATALOG", "TABLES", "QUERIES", "DRY_RUNS", "REPORT")
         }
         paths["CATALOG"].write_text(self.CATALOG, encoding="utf-8")
+        paths["TABLES"].write_text("tables: [o.d.t]\nkeys: {o.d.t: [[day]]}\n", encoding="utf-8")
         paths["QUERIES"].write_text(
             "- {id: q, sql: \"SELECT n FROM `o.d.t` WHERE day = '2026-09-30' LIMIT 10\"}\n",
             encoding="utf-8",

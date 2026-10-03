@@ -17,6 +17,7 @@ tables:
   - name: proj.analytics.users
     rows: 5000000
     bytes: 900000000
+    keys: [[user_id]]
     columns:
       user_id: STRING
       country: STRING
@@ -31,11 +32,24 @@ tables:
     rows: 80000000
     bytes: 12000000000
     partitioning: {column: order_date, granularity: DAY, required: true}
+    keys: [[order_id]]
     columns:
       order_id: STRING
       user_id: STRING
       amount: NUMERIC
       order_date: DATE
+  # Many rows per order, for SCN007.
+  - name: proj.analytics.order_items
+    rows: 240000000
+    bytes: 19200000000
+    keys: [[item_id], [order_id, line]]
+    columns:
+      item_id: STRING
+      order_id: STRING
+      line: INT64
+      user_id: STRING
+      sku: STRING
+      price: NUMERIC
   - name: proj.ga4.events_*
     rows: 900000000
     bytes: 750000000000
