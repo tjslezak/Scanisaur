@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from sqlglot import exp
@@ -33,6 +34,21 @@ class TestParse:
         logger = logging.getLogger("sqlglot")
         before = logger.level
         parse("CALL proc()", "bigquery")
+        assert logger.level == before
+
+    def test_quiets_only_its_own_parse(self, caplog: pytest.LogCaptureFixture) -> None:
+        logger = logging.getLogger("sqlglot")
+        with caplog.at_level(logging.WARNING, logger="sqlglot"):
+            parse("CALL proc()", "bigquery")
+            assert not caplog.records  # the Command fallback warning is dropped
+            logger.warning("logged outside parse()")
+        assert [r.getMessage() for r in caplog.records] == ["logged outside parse()"]
+
+    def test_concurrent_parses_leave_logging_unchanged(self) -> None:
+        logger = logging.getLogger("sqlglot")
+        before = logger.level
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: parse("CALL proc()", "bigquery"), range(200)))
         assert logger.level == before
 
 
