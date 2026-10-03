@@ -191,3 +191,62 @@ class TestPolicyFile:
     def test_missing_config_is_a_usage_error(self, tmp_path: Path) -> None:
         result = run_check("--config", str(tmp_path / "none.yaml"), sql="SELECT 1")
         assert result.exit_code == EXIT_ERROR
+
+
+class TestWarehouse:
+    """``refresh`` and ``check`` without ``--catalog``, against a DuckDB warehouse."""
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> Path:
+        import duckdb
+
+        with duckdb.connect(str(tmp_path / "shop.duckdb")) as db:
+            db.execute(
+                "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, user_id VARCHAR);"
+                "CREATE TABLE users (user_id VARCHAR PRIMARY KEY, country VARCHAR)"
+            )
+        config = tmp_path / "scanisaur.yaml"
+        config.write_text(
+            "warehouse: {type: duckdb, path: shop.duckdb}\n"
+            f"cache: {{path: {tmp_path / 'cache.sqlite'}}}\n",
+            encoding="utf-8",
+        )
+        return config
+
+    def test_refresh(self, config: Path) -> None:
+        result = runner.invoke(app, ["refresh", "--config", str(config)])
+        assert result.exit_code == EXIT_OK, result.output
+        assert re.fullmatch(r"refreshed 2 tables in \d+\.\d s\n", result.stdout)
+
+    def test_check_without_catalog(self, config: Path) -> None:
+        sql = "SELECT usr_id FROM orders"
+        result = runner.invoke(app, ["check", "--config", str(config), "-"], input=sql)
+        assert result.exit_code == EXIT_BLOCKED, result.output
+        assert "SCN001" in result.stdout
+        assert "shop.main.orders" in result.stdout
+        ok = runner.invoke(
+            app, ["check", "--config", str(config), "-"], input="SELECT country FROM users LIMIT 5"
+        )
+        assert ok.exit_code == EXIT_OK, ok.output
+
+    def test_check_without_catalog_or_warehouse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["check", "-"], input="SELECT 1")
+        assert result.exit_code == EXIT_ERROR
+        assert "give --catalog" in result.stderr
+
+    def test_refresh_without_warehouse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["refresh"])
+        assert result.exit_code == EXIT_ERROR
+        assert "names no warehouse" in result.stderr
+
+    def test_refresh_of_a_missing_database(self, config: Path) -> None:
+        (config.parent / "shop.duckdb").unlink()
+        result = runner.invoke(app, ["refresh", "--config", str(config)])
+        assert result.exit_code == EXIT_ERROR
+        assert "no such DuckDB file" in result.stderr

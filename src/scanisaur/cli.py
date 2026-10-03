@@ -2,6 +2,7 @@
 
 import dataclasses
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -9,11 +10,14 @@ from typing import Annotated, TypeVar
 import typer
 
 from scanisaur import __version__
-from scanisaur.catalog.fixtures import FixtureError, load_catalog
-from scanisaur.config import CONFIG_FILE, ConfigError, load_policy
-from scanisaur.engine.check import DEFAULT_POLICY, Policy, check
+from scanisaur.catalog.cached import CachedSource
+from scanisaur.catalog.fixtures import load_catalog
+from scanisaur.catalog.model import Catalog
+from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config
+from scanisaur.engine.check import check
 from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Estimate, Verdict
+from scanisaur.errors import ScanisaurError
 
 #: Exit codes for ``scanisaur check``. 2 is also what Click uses for usage errors.
 EXIT_OK = 0
@@ -60,15 +64,16 @@ def version_command() -> None:
 @app.command("check")
 def check_command(
     catalog: Annotated[
-        Path,
+        Path | None,
         typer.Option(
             "--catalog",
             "-c",
-            help="Catalog fixture (YAML) to check against.",
+            help="Catalog fixture (YAML) to check against. Default: the warehouse in the "
+            "policy file, through the local cache.",
             exists=True,
             dir_okay=False,
         ),
-    ],
+    ] = None,
     source: Annotated[
         str, typer.Argument(help="SQL file to check, or '-' to read standard input.")
     ] = "-",
@@ -106,11 +111,12 @@ def check_command(
     Exit codes: 0 may run; 1 blocked (or warned, with --strict); 2 usage or input error.
     """
     try:
-        loaded = load_catalog(catalog)
-        policy = _policy(config)
-    except (FixtureError, ConfigError) as error:
+        settings = _config(config)
+        loaded = _catalog(catalog, settings)
+    except ScanisaurError as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
+    policy = settings.policy
     try:
         sql = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
@@ -130,10 +136,44 @@ def check_command(
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
 
 
-def _policy(config: Path | None) -> Policy:
-    if config is None and Path(CONFIG_FILE).is_file():
-        config = Path(CONFIG_FILE)
-    return DEFAULT_POLICY if config is None else load_policy(config)
+@app.command("refresh")
+def refresh_command(
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+) -> None:
+    """Fetch the warehouse's metadata into the local cache now."""
+    start = time.perf_counter()
+    try:
+        snapshot = CachedSource(_config(config)).refresh()
+    except ScanisaurError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    count = len(snapshot.catalog.tables)
+    typer.echo(
+        f"refreshed {count} table{'' if count == 1 else 's'} in {time.perf_counter() - start:.1f} s"
+    )
+
+
+def _config(path: Path | None) -> Config:
+    if path is None and Path(CONFIG_FILE).is_file():
+        path = Path(CONFIG_FILE)
+    return Config() if path is None else load_config(path)
+
+
+def _catalog(fixture: Path | None, config: Config) -> Catalog:
+    """The fixture when given; otherwise the configured warehouse, through the cache."""
+    if fixture is not None:
+        return load_catalog(fixture)
+    if config.warehouse is None:
+        raise ConfigError(f"give --catalog, or name a warehouse in {CONFIG_FILE}")
+    return CachedSource(config).current().catalog
 
 
 def _format(result: CheckResult) -> str:

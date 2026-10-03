@@ -1,0 +1,113 @@
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from scanisaur.catalog import Catalog, Column, Table
+from scanisaur.catalog.cache import MetadataCache
+from scanisaur.catalog.cached import CachedSource
+from scanisaur.catalog.connectors import ConnectorError, Probe
+from scanisaur.config import CacheSettings, Config, ConfigError
+
+
+class FakeConnector:
+    name = "fake:warehouse"
+
+    def __init__(self) -> None:
+        self.tables = [Table("p", "d", "orders", (Column("order_id", "INT64"),))]
+        self.fetches = 0
+        self.fail = False
+
+    def fetch_catalog(self) -> Catalog:
+        if self.fail:
+            raise ConnectorError("warehouse down")
+        self.fetches += 1
+        return Catalog(tuple(self.tables), default_project="p", default_dataset="d")
+
+    def fetch_table(self, project: str, dataset: str, name: str) -> Table | None:
+        return None
+
+    def check_access(self) -> list[Probe]:
+        return []
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = datetime.now(UTC)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+@pytest.fixture
+def connector() -> FakeConnector:
+    return FakeConnector()
+
+
+def _source(
+    tmp_path: Path, connector: FakeConnector, clock: Clock, **config: object
+) -> CachedSource:
+    return CachedSource(
+        Config(cache=CacheSettings(ttl=timedelta(hours=6)), **config),  # type: ignore[arg-type]
+        connector=connector,
+        cache=MetadataCache(tmp_path / "c.sqlite"),
+        now=clock,
+    )
+
+
+def test_first_use_fetches_then_reuses(tmp_path: Path, connector: FakeConnector) -> None:
+    clock = Clock()
+    source = _source(tmp_path, connector, clock)
+    first = source.current()
+    assert first.catalog.find("orders") is not None
+    assert source.current() is first
+    # A new process reads the cache instead of the warehouse.
+    assert _source(tmp_path, connector, clock).current().snapshot_id == first.snapshot_id
+    assert connector.fetches == 1
+
+
+def test_stale_snapshot_is_refreshed(tmp_path: Path, connector: FakeConnector) -> None:
+    clock = Clock()
+    source = _source(tmp_path, connector, clock)
+    first = source.current()
+    clock.now += timedelta(hours=7)
+    connector.tables.append(Table("p", "d", "users", (Column("user_id", "INT64"),)))
+    second = source.current()
+    assert second.snapshot_id != first.snapshot_id
+    assert second.catalog.find("users") is not None
+
+
+def test_failed_refresh_keeps_the_stale_snapshot(
+    tmp_path: Path, connector: FakeConnector, caplog: pytest.LogCaptureFixture
+) -> None:
+    clock = Clock()
+    source = _source(tmp_path, connector, clock)
+    first = source.current()
+    clock.now += timedelta(days=1)
+    connector.fail = True
+    assert source.current() is first
+    assert "stale catalog" in caplog.text
+    assert "warehouse down" in caplog.text
+
+
+def test_first_fetch_failure_raises(tmp_path: Path, connector: FakeConnector) -> None:
+    connector.fail = True
+    with pytest.raises(ConnectorError, match="warehouse down"):
+        _source(tmp_path, connector, Clock()).current()
+
+
+def test_configured_keys_are_added(tmp_path: Path, connector: FakeConnector) -> None:
+    source = _source(tmp_path, connector, Clock(), keys={"p.d.orders": (("order_id",),)})
+    orders = source.current().catalog.find("orders")
+    assert orders is not None
+    assert orders.keys == (("order_id",),)
+
+
+def test_search(tmp_path: Path, connector: FakeConnector) -> None:
+    hits = _source(tmp_path, connector, Clock()).search("order", 5)
+    assert {(h.table, h.column) for h in hits} == {("p.d.orders", None), ("p.d.orders", "order_id")}
+
+
+def test_needs_a_warehouse() -> None:
+    with pytest.raises(ConfigError, match="names no warehouse"):
+        CachedSource(Config())
