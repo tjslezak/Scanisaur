@@ -94,6 +94,11 @@ class TestHookTool:
         result = _call(HOOK_TOOL, {"command": "bq query 'SELECT usr_id FROM users'"})
         assert json.loads(_text(result))["hookSpecificOutput"]["permissionDecision"] == "deny"
 
+    def test_chained_bq_commands(self) -> None:
+        command = "bq query 'SELECT day FROM calendar' && bq query 'SELECT usr_id FROM users'"
+        result = _call(HOOK_TOOL, {"command": command})
+        assert json.loads(_text(result))["hookSpecificOutput"]["permissionDecision"] == "deny"
+
     @pytest.mark.parametrize(
         "arguments",
         [

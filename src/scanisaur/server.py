@@ -20,7 +20,7 @@ from scanisaur import __version__, tools
 from scanisaur.catalog.source import CatalogSource
 from scanisaur.engine.check import Policy
 from scanisaur.engine.result import CheckResult
-from scanisaur.hook import CheckJson, claude_output, sql_from
+from scanisaur.hook import CheckJson, claude_output, sql_from, worst
 from scanisaur.listener import hook_listener
 
 #: Sent when a client connects. The agent evaluation (#10) tunes these words.
@@ -105,11 +105,11 @@ def build_server(
         command: Annotated[str, Field(description="A shell command that may run SQL.")] = "",
     ) -> CallToolResult:
         """For Claude Code's PreToolUse hook only. Agents: call scanisaur_check_sql."""
-        found = sql_from(sql, command)
-        if found is None:
+        snapshot = source.current()
+        results = [tools.check_sql(found, snapshot, policy) for found in sql_from(sql, command)]
+        if not results:
             return CallToolResult(content=[TextContent(type="text", text="")])
-        result = tools.check_sql(found, source.current(), policy)
-        output = claude_output(cast(CheckJson, result.model_dump(mode="json")))
+        output = claude_output(worst([cast(CheckJson, r.model_dump(mode="json")) for r in results]))
         text = "" if output is None else json.dumps(output)
         return CallToolResult(content=[TextContent(type="text", text=text)])
 

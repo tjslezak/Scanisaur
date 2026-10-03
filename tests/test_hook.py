@@ -22,12 +22,13 @@ from scanisaur.hook import (
     CheckJson,
     FindingJson,
     adk_callback,
-    bq_query_sql,
+    bq_queries,
     claude_output,
     cursor_output,
     extract_sql,
     request_check,
     socket_path,
+    worst,
 )
 from scanisaur.listener import hook_listener
 
@@ -66,19 +67,19 @@ class TestExtractSql:
     @pytest.mark.parametrize("key", ["query", "sql"])
     def test_mcp_tool(self, key: str) -> None:
         call = _call("mcp__bigquery__execute_sql", **{key: GOOD_SQL})
-        assert extract_sql(call) == GOOD_SQL
+        assert extract_sql(call) == [GOOD_SQL]
 
     def test_other_tools_are_ignored(self) -> None:
-        assert extract_sql(_call("mcp__bigquery__get_table_info", query=GOOD_SQL)) is None
+        assert extract_sql(_call("mcp__bigquery__get_table_info", query=GOOD_SQL)) == []
 
     def test_tool_patterns(self) -> None:
         call = _call("mcp__duck__run", sql=GOOD_SQL)
-        assert extract_sql(call) is None
-        assert extract_sql(call, ("mcp__duck__*",)) == GOOD_SQL
+        assert extract_sql(call) == []
+        assert extract_sql(call, ("mcp__duck__*",)) == [GOOD_SQL]
 
     def test_bq_query_in_bash(self) -> None:
         command = f"bq query --use_legacy_sql=false '{GOOD_SQL}'"
-        assert extract_sql(_call("Bash", command=command)) == GOOD_SQL
+        assert extract_sql(_call("Bash", command=command)) == [GOOD_SQL]
 
     @pytest.mark.parametrize(
         "call",
@@ -90,7 +91,7 @@ class TestExtractSql:
         ],
     )
     def test_no_sql(self, call: dict[str, Any]) -> None:
-        assert extract_sql(call) is None
+        assert extract_sql(call) == []
 
 
 class TestBqQuerySql:
@@ -104,10 +105,19 @@ class TestBqQuerySql:
             ("bq query 'SELECT 1'|head", "SELECT 1"),
             ("bq query 'SELECT 1' > out.txt; echo done", "SELECT 1"),
             ("bq query 'SELECT a FROM t WHERE x > 1'", "SELECT a FROM t WHERE x > 1"),
+            ("bq query 'SELECT 1' 2>&1", "SELECT 1"),
+            ("bq query 'SELECT 1' --format json", "SELECT 1"),
+            ("bq query -n 10 'SELECT 1' --location=US", "SELECT 1"),
+            ("bq query 'SELECT @x' --parameter 'x:STRING:a b'", "SELECT @x"),
+            ("bq query SELECT 1", "SELECT 1"),
         ],
     )
     def test_reads_the_sql(self, command: str, sql: str) -> None:
-        assert bq_query_sql(command) == sql
+        assert bq_queries(command) == [sql]
+
+    def test_reads_every_query(self) -> None:
+        command = "bq query 'SELECT 1' && bq query 'SELECT 2'; bq ls"
+        assert bq_queries(command) == ["SELECT 1", "SELECT 2"]
 
     @pytest.mark.parametrize(
         "command",
@@ -115,6 +125,7 @@ class TestBqQuerySql:
             "bq ls",
             "bq query",
             "bq query --flag",
+            "bq query --format json",
             "echo 'unclosed",
             "query bq",
             "bq ls && echo query x",
@@ -122,7 +133,18 @@ class TestBqQuerySql:
         ],
     )
     def test_nothing_to_read(self, command: str) -> None:
-        assert bq_query_sql(command) is None
+        assert bq_queries(command) == []
+
+
+def test_worst_keeps_the_most_severe_verdict_and_every_finding() -> None:
+    warn: FindingJson = {"rule": "SCN005", "severity": "warn", "message": "W."}
+    block: FindingJson = {"rule": "SCN001", "severity": "block", "message": "B."}
+    results: list[CheckJson] = [
+        {"verdict": "warn", "findings": [warn]},
+        {"verdict": "block", "findings": [block]},
+        {"verdict": "pass", "findings": []},
+    ]
+    assert worst(results) == {"verdict": "block", "findings": [warn, block]}
 
 
 class TestClaudeOutput:
@@ -257,6 +279,14 @@ class TestMain:
         output = json.loads(asyncio.run(run()))
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
+    def test_checks_every_chained_query(
+        self, sock: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(hook, "socket_path", lambda catalog, config: sock)
+        command = f"bq query '{GOOD_SQL}' && bq query '{BAD_SQL}' 2>&1"
+        output = json.loads(_run_hook(_call("Bash", command=command), monkeypatch, capsys))
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
     def test_checks_here_without_a_server(
         self, sock: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -322,20 +352,20 @@ def test_hook_against_a_running_serve() -> None:
 class TestCursor:
     def test_mcp_tool_input_as_a_json_string(self) -> None:
         call = {"tool_name": "execute_sql", "tool_input": json.dumps({"query": GOOD_SQL})}
-        assert extract_sql(call) == GOOD_SQL
+        assert extract_sql(call) == [GOOD_SQL]
 
     def test_shell_command(self) -> None:
-        assert extract_sql({"command": f"bq query '{GOOD_SQL}'", "cwd": "/x"}) == GOOD_SQL
+        assert extract_sql({"command": f"bq query '{GOOD_SQL}'", "cwd": "/x"}) == [GOOD_SQL]
 
     def test_bad_json_string(self) -> None:
-        assert extract_sql({"tool_name": "execute_sql", "tool_input": "{nope"}) is None
+        assert extract_sql({"tool_name": "execute_sql", "tool_input": "{nope"}) == []
 
     def test_outputs(self) -> None:
         finding: FindingJson = {"rule": "SCN001", "severity": "block", "message": "No."}
         assert cursor_output({"verdict": "pass", "findings": []}) is None
         warn = cursor_output({"verdict": "warn", "findings": [finding]})
         assert warn is not None
-        assert warn["permission"] == "allow"
+        assert "permission" not in warn
         block = cursor_output({"verdict": "block", "findings": [finding]})
         assert block is not None
         assert block["permission"] == "deny"
@@ -355,7 +385,9 @@ class TestCursor:
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"command": "bq query 'S'"})))
         missing = str(tmp_path / "missing.yaml")
         assert hook.main(["--format", "cursor", "--catalog", missing]) == 0
-        assert json.loads(capsys.readouterr().out)["permission"] == "allow"
+        output = json.loads(capsys.readouterr().out)
+        assert "permission" not in output
+        assert "unchecked" in output["agent_message"]
 
 
 class TestAdk:

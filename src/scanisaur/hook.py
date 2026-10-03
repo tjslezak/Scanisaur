@@ -38,6 +38,15 @@ SHELL_TOOLS = ("Bash",)
 SQL_ARGUMENTS = ("sql", "query")
 #: The characters shlex splits out as shell operators.
 _SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+_VERDICTS = ("pass", "warn", "block")
+#: ``bq query`` flags that take a value as the next word, as in ``--format json``.
+_BQ_VALUE_FLAGS = frozenset(
+    {
+        "format", "n", "max_rows", "location", "project_id", "dataset_id",
+        "destination_table", "parameter", "label", "job_id", "maximum_bytes_billed",
+        "start_row", "connection_property", "reservation_id",
+    }
+)  # fmt: skip
 CONNECT_TIMEOUT = 0.05
 READ_TIMEOUT = 2.0
 #: The longest response line accepted from the server.
@@ -92,8 +101,8 @@ def policy_file(config: Path | None) -> Path | None:
     return config
 
 
-def extract_sql(call: JsonObject, tools: tuple[str, ...] = DEFAULT_TOOLS) -> str | None:
-    """The SQL in a tool call, or None when there is none.
+def extract_sql(call: JsonObject, tools: tuple[str, ...] = DEFAULT_TOOLS) -> list[str]:
+    """The SQL in a tool call: one query, several from a shell command, or none.
 
     Reads Claude Code's ``PreToolUse`` payload and Cursor's ``beforeMCPExecution`` and
     ``beforeShellExecution`` payloads: a tool name with its arguments (an object, or a
@@ -105,33 +114,33 @@ def extract_sql(call: JsonObject, tools: tuple[str, ...] = DEFAULT_TOOLS) -> str
         try:
             arguments = json.loads(arguments)
         except ValueError:
-            return None
+            return []
     if name is None and isinstance(call.get("command"), str):
-        return bq_query_sql(call["command"])
+        return bq_queries(call["command"])
     if not isinstance(name, str) or not isinstance(arguments, dict):
-        return None
+        return []
     if name in SHELL_TOOLS:
         command = arguments.get("command")
-        return bq_query_sql(command) if isinstance(command, str) else None
+        return bq_queries(command) if isinstance(command, str) else []
     if not any(fnmatch.fnmatchcase(name, pattern) for pattern in tools):
-        return None
+        return []
     for key in SQL_ARGUMENTS:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
-            return value
-    return None
+            return [value]
+    return []
 
 
-def sql_from(sql: str = "", command: str = "") -> str | None:
+def sql_from(sql: str = "", command: str = "") -> list[str]:
     """The SQL handed to the ``scanisaur_hook`` MCP tool: as is, or from a shell command.
 
     An argument the hook's template couldn't fill arrives empty or as ``${...}``.
     """
     if sql.strip() and not _unfilled(sql):
-        return sql
+        return [sql]
     if command.strip() and not _unfilled(command):
-        return bq_query_sql(command)
-    return None
+        return bq_queries(command)
+    return []
 
 
 def _unfilled(value: str) -> bool:
@@ -139,31 +148,43 @@ def _unfilled(value: str) -> bool:
     return value.startswith("${") and value.endswith("}")
 
 
-def bq_query_sql(command: str) -> str | None:
-    """The SQL of a ``bq query 'SELECT ...'`` command: its last argument that isn't a flag.
+def bq_queries(command: str) -> list[str]:
+    """The SQL of each ``bq query 'SELECT ...'`` in a shell command line, in order.
 
-    Only the words of the ``bq`` command itself count, up to a pipe, ``&&``, ``;`` or
-    redirect. Commands this can't read, such as SQL piped in from a file, aren't checked.
+    Only the words of each ``bq`` command count, up to a pipe, ``&&``, ``;`` or redirect.
+    Commands this can't read, such as SQL piped in from a file, aren't checked.
     """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         words = list(lexer)
     except ValueError:  # an unclosed quote
+        return []
+    return [sql for segment in _commands(words) if (sql := _bq_query(segment))]
+
+
+def _bq_query(words: list[str]) -> str | None:
+    """The SQL of one simple command, if it is ``bq ... query ... SQL``."""
+    names = [Path(word).name for word in words]
+    if "bq" not in names or "query" not in words[names.index("bq") + 1 :]:
         return None
-    for segment in _commands(words):
-        names = [Path(word).name for word in segment]
-        if "bq" in names and "query" in segment[names.index("bq") + 1 :]:
-            rest = segment[segment.index("query", names.index("bq") + 1) + 1 :]
-            positional = [word for word in rest if not word.startswith("-")]
-            return positional[-1] if positional else None
-    return None
+    rest = iter(words[words.index("query", names.index("bq") + 1) + 1 :])
+    positional = []
+    for word in rest:
+        if word.lstrip("-") in _BQ_VALUE_FLAGS:
+            next(rest, None)  # the flag's value, as in ``--format json``
+        elif not word.startswith("-"):
+            positional.append(word)
+    # A query is one quoted word with spaces in it; bq joins unquoted words into one.
+    quoted = [word for word in positional if any(char.isspace() for char in word)]
+    return quoted[-1] if quoted else " ".join(positional) or None
 
 
 def _commands(words: list[str]) -> list[list[str]]:
     """Split shell words into simple commands at operators such as ``|``, ``&&`` and ``>``.
 
-    A redirect's target, the word after ``>`` or ``<``, is dropped with it.
+    A redirect's target, the word after ``>`` or ``<``, is dropped with it, and so is the
+    file descriptor before it, as in ``2>&1``.
     """
     commands: list[list[str]] = [[]]
     skip_next = False
@@ -172,6 +193,8 @@ def _commands(words: list[str]) -> list[list[str]]:
             skip_next = False
         elif word and set(word) <= _SHELL_OPERATOR_CHARS:
             skip_next = word[0] in "<>"
+            if skip_next and commands[-1] and commands[-1][-1].isdigit():
+                commands[-1].pop()
             commands.append([])
         else:
             commands[-1].append(word)
@@ -229,6 +252,11 @@ def _read_line(client: socket.socket) -> bytes:
     return b"".join(chunks)
 
 
+def check_all(queries: list[str], path: Path, catalog: Path, config: Path | None) -> CheckJson:
+    """Check each query with the server at ``path``, or in this process when none answers."""
+    return worst([request_check(path, sql) or check_here(sql, catalog, config) for sql in queries])
+
+
 def check_here(sql: str, catalog: Path, config: Path | None) -> CheckJson:
     """Check without a server. Imports the engine, so it costs a few hundred ms."""
     from scanisaur.catalog.fixtures import load_catalog
@@ -238,6 +266,13 @@ def check_here(sql: str, catalog: Path, config: Path | None) -> CheckJson:
     policy = DEFAULT_POLICY if config is None else load_policy(config)
     result = check(sql, load_catalog(catalog), policy=policy)
     return cast(CheckJson, result.model_dump(mode="json"))
+
+
+def worst(results: list[CheckJson]) -> CheckJson:
+    """One result for several queries: the most severe verdict, with every finding."""
+    verdict = max((result["verdict"] for result in results), key=_VERDICTS.index)
+    findings = [finding for result in results for finding in result["findings"]]
+    return {"verdict": verdict, "findings": findings}
 
 
 def claude_output(result: CheckJson) -> JsonObject | None:
@@ -258,13 +293,17 @@ def claude_output(result: CheckJson) -> JsonObject | None:
 
 
 def cursor_output(result: CheckJson) -> JsonObject | None:
-    """Cursor's answer for a check result: deny on block, findings for the agent on warn."""
+    """Cursor's answer for a check result: deny on block, findings for the agent on warn.
+
+    Like :func:`claude_output`, it never answers "allow", which would skip the user's own
+    approval settings; leaving ``permission`` out keeps them.
+    """
     verdict = result.get("verdict")
     if verdict == "block":
         reason = _explain(result)
         return {"permission": "deny", "user_message": reason, "agent_message": reason}
     if verdict == "warn":
-        return {"permission": "allow", "agent_message": _explain(result)}
+        return {"agent_message": _explain(result)}
     return None
 
 
@@ -272,7 +311,7 @@ def unchecked_output(reason: str, output_format: HookFormat = "claude") -> JsonO
     """The answer when the SQL couldn't be checked: let it run, and say so."""
     context = f"Scanisaur couldn't check this SQL ({reason}), so it ran unchecked."
     if output_format == "cursor":
-        return {"permission": "allow", "agent_message": context}
+        return {"agent_message": context}
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}
 
 
@@ -304,19 +343,17 @@ def adk_callback(
     def before_tool_callback(
         tool: Any, args: dict[str, Any], tool_context: Any
     ) -> JsonObject | None:
-        sql = extract_sql({"tool_name": getattr(tool, "name", None), "tool_input": args}, tools)
-        if sql is None:
+        queries = extract_sql({"tool_name": getattr(tool, "name", None), "tool_input": args}, tools)
+        if not queries:
             return None
-        result = request_check(path, sql)
-        if result is None:
-            try:
-                result = check_here(sql, catalog, config)
-            except (OSError, ValueError) as error:
-                import logging  # only on this path: the hook command doesn't need it
+        try:
+            result = check_all(queries, path, catalog, config)
+        except (OSError, ValueError) as error:
+            import logging  # only on this path: the hook command doesn't need it
 
-                logging.getLogger(__name__).warning("SQL ran unchecked: %s", error)
-                return None  # fail open, as the command does
-        return {"error": _explain(result)} if result.get("verdict") == "block" else None
+            logging.getLogger(__name__).warning("SQL ran unchecked: %s", error)
+            return None  # fail open, as the command does
+        return {"error": _explain(result)} if result["verdict"] == "block" else None
 
     return before_tool_callback
 
@@ -349,19 +386,17 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         print(f"scanisaur hook: input isn't JSON: {error}", file=sys.stderr)
         return 0
-    sql = extract_sql(call, tuple(args.tool or DEFAULT_TOOLS)) if isinstance(call, dict) else None
-    if sql is None:
+    queries = extract_sql(call, tuple(args.tool or DEFAULT_TOOLS)) if isinstance(call, dict) else []
+    if not queries:
         return 0
 
     config = policy_file(args.config)
-    result = request_check(socket_path(args.catalog, config), sql)
-    if result is None:
-        try:
-            result = check_here(sql, args.catalog, config)
-        except (OSError, ValueError) as error:  # a missing or bad catalog or policy file
-            print(f"scanisaur hook: {error}", file=sys.stderr)
-            print(json.dumps(unchecked_output(str(error), args.format)))
-            return 0
+    try:
+        result = check_all(queries, socket_path(args.catalog, config), args.catalog, config)
+    except (OSError, ValueError) as error:  # a missing or bad catalog or policy file
+        print(f"scanisaur hook: {error}", file=sys.stderr)
+        print(json.dumps(unchecked_output(str(error), args.format)))
+        return 0
     output = cursor_output(result) if args.format == "cursor" else claude_output(result)
     if output is not None:
         print(json.dumps(output))
