@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from datetime import date, timedelta
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -40,8 +40,9 @@ _FINE_UNITS = frozenset({"HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND
 #: BigQuery refuses a date literal with spaces around it ("Could not cast literal").
 _DATE_ONLY = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 _NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
-_EQUALITIES = ("=", "!=", "IN", "IS NOT DISTINCT FROM")
-_OPERATORS: dict[type[exp.Expr], str] = {
+Operator = Literal["=", "!=", "IS NOT DISTINCT FROM", "<", "<=", ">", ">=", "IN"]
+_EQUALITIES: frozenset[Operator] = frozenset({"=", "!=", "IN", "IS NOT DISTINCT FROM"})
+_OPERATORS: dict[type[exp.Expr], Operator] = {
     exp.EQ: "=",
     exp.NEQ: "!=",
     exp.NullSafeEQ: "IS NOT DISTINCT FROM",
@@ -50,7 +51,7 @@ _OPERATORS: dict[type[exp.Expr], str] = {
     exp.GT: ">",
     exp.GTE: ">=",
 }
-_FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
+_FLIPPED: dict[Operator, Operator] = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
 #: sqlglot writes `DATE '2026-09-30'` as a CAST, `CURRENT_DATE()` without parentheses...
 _TYPED_LITERAL = re.compile(r"CAST\('([^'\\]*)' AS (DATE|DATETIME|TIMESTAMP|TIME)\)")
 _BARE_CURRENT = re.compile(r"\bCURRENT_(DATE|DATETIME|TIMESTAMP|TIME)\b(?!\()")
@@ -62,7 +63,7 @@ class _Pair(NamedTuple):
     """Two sides of one comparison, with the operator as ``left op right``."""
 
     left: exp.Expr
-    op: str
+    op: Operator
     right: exp.Expr
 
 
@@ -112,16 +113,15 @@ def _comparisons(select: exp.Expr) -> Iterator[exp.Expr]:
 
 
 def _pairs(node: exp.Expr) -> list[_Pair]:
-    if isinstance(node, exp.Between):
-        return [
-            _Pair(node.this, ">=", node.args["low"]),
-            _Pair(node.this, "<=", node.args["high"]),
-        ]
-    if isinstance(node, exp.In):
-        if node.args.get("query") is not None or node.args.get("unnest") is not None:
-            return []
-        return [_Pair(node.this, "IN", value) for value in node.expressions]
-    return [_Pair(node.this, _OPERATORS[type(node)], node.expression)]
+    match node:
+        case exp.Between(this=value):
+            return [_Pair(value, ">=", node.args["low"]), _Pair(value, "<=", node.args["high"])]
+        case exp.In() if node.args.get("query") is not None or node.args.get("unnest"):
+            return []  # compared with a subquery's column or an array's elements
+        case exp.In(this=value, expressions=values):
+            return [_Pair(value, "IN", other) for other in values]
+        case _:
+            return [_Pair(node.this, _OPERATORS[type(node)], node.expression)]
 
 
 def _check(node: exp.Expr, rows_read: bool) -> Finding | None:
