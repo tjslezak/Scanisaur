@@ -228,6 +228,14 @@ class TestUnnest:
     def test_unknown_elements_stand_down(self, sql: str) -> None:
         assert _unknown_names(check(sql, CATALOG)) == []
 
+    def test_two_unaliased_unnests(self) -> None:
+        # sqlglot gives both the same empty name and failed with "Alias already used".
+        sql = "SELECT e.user_id, nope FROM events e, UNNEST(e.params), UNNEST([1, 2])"
+        result = check(sql, CATALOG)
+        assert [f.message for f in _unknown_names(result)] == [
+            "Column `nope` does not exist in `proj.analytics.events`, the UNNEST or the UNNEST."
+        ]
+
     @staticmethod
     def _catalog(type_: str) -> Catalog:
         table = Table("proj", "analytics", "t", (Column("xs", type_),))

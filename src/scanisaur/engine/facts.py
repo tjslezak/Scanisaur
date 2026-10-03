@@ -660,7 +660,10 @@ def _unnest_owners(scope: Scope, members: Iterable[str]) -> dict[str, frozenset[
 def _early_limit(select: exp.Select) -> int | None:
     """The SELECT's LIMIT, when nothing in it needs every row first, so BigQuery stops
     once it has that many: measured, `CROSS JOIN ... LIMIT 10` took 0.14 slot-seconds
-    where the whole product took 160 (#23)."""
+    where the whole product took 160 (#23). None with an OFFSET: BigQuery makes the
+    skipped pairs too, so `LIMIT 10 OFFSET 1000000000` builds a billion of them."""
+    if select.args.get("offset"):
+        return None
     limit_node = select.args.get("limit")
     value = limit_node.expression if limit_node is not None else None
     if not (isinstance(value, exp.Literal) and value.is_int):
