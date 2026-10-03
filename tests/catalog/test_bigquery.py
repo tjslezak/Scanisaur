@@ -1,3 +1,4 @@
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
@@ -220,6 +221,29 @@ def test_fetch_catalog() -> None:
     assert "`proj`.`analytics`.__TABLES__" in sizes
     assert "`scratch`" in sizes  # included, though it has no tables
     assert "`ga4`" not in sizes
+
+
+#: GoogleSQL's reserved keywords, which BigQuery rejects as unquoted column aliases.
+_KEYWORDS = """
+ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST COLLATE CONTAINS CREATE
+CROSS CUBE CURRENT DEFAULT DEFINE DESC DISTINCT ELSE END ENUM ESCAPE EXCEPT EXCLUDE EXISTS
+EXTRACT FALSE FETCH FOLLOWING FOR FROM FULL GROUP GROUPING GROUPS HASH HAVING IF IGNORE IN INNER
+INTERSECT INTERVAL INTO IS JOIN LATERAL LEFT LIKE LIMIT LOOKUP MERGE NATURAL NEW NO NOT NULL
+NULLS OF ON OR ORDER OUTER OVER PARTITION PRECEDING PROTO QUALIFY RANGE RECURSIVE RESPECT RIGHT
+ROLLUP ROWS SELECT SET SOME STRUCT TABLESAMPLE THEN TO TREAT TRUE UNBOUNDED UNION UNNEST USING
+WHEN WHERE WINDOW WITH WITHIN
+"""
+RESERVED = frozenset(_KEYWORDS.split())
+
+
+def test_no_alias_is_a_reserved_keyword() -> None:
+    client = FakeClient()
+    _connector(client).fetch_catalog()
+    aliases = {
+        alias.upper() for q in client.queries for alias in re.findall(r"\bAS\s+(\w+)", q, re.I)
+    }
+    assert aliases
+    assert not aliases & RESERVED
 
 
 def test_no_datasets() -> None:

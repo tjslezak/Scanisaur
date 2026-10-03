@@ -66,7 +66,8 @@ class MetadataCache:
 
     def load(self) -> Snapshot | None:
         """The latest snapshot, or None when nothing has been saved."""
-        with self._connect() as db:
+        with self._connect() as db, db:
+            db.execute("BEGIN")  # one read transaction, so a concurrent save can't split it
             row = db.execute(
                 "SELECT id, fetched_at, default_project, default_dataset"
                 " FROM snapshots ORDER BY id DESC LIMIT 1"
@@ -115,20 +116,26 @@ class MetadataCache:
         return Snapshot(catalog, str(snapshot_id), fetched_at)
 
     def put_table(self, snapshot: Snapshot, table: Table) -> Snapshot:
-        """Add or replace one table in ``snapshot``, as fetched after it was saved."""
+        """Add or replace one table in ``snapshot``, as fetched after it was saved.
+
+        If another process has saved a newer snapshot since, ``snapshot`` is gone from the
+        file: the table is then added in memory only, and the next load reads the newer one.
+        """
+        snapshot_id = int(snapshot.snapshot_id)
         with self._connect() as db, db:
-            snapshot_id = int(snapshot.snapshot_id)
-            db.execute(
-                "DELETE FROM tables WHERE snapshot_id = ? AND project = ? AND dataset = ?"
-                " AND name = ?",
-                (snapshot_id, table.project, table.dataset, table.name),
-            )
-            if self._has_search(db):
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone():
                 db.execute(
-                    "DELETE FROM search WHERE snapshot_id = ? AND tbl = ?",
-                    (snapshot_id, table.qualified_name),
+                    "DELETE FROM tables WHERE snapshot_id = ? AND project = ? AND dataset = ?"
+                    " AND name = ?",
+                    (snapshot_id, table.project, table.dataset, table.name),
                 )
-            self._insert(db, snapshot_id, table)
+                if self._has_search(db):
+                    db.execute(
+                        "DELETE FROM search WHERE snapshot_id = ? AND tbl = ?",
+                        (snapshot_id, table.qualified_name),
+                    )
+                self._insert(db, snapshot_id, table)
         catalog = snapshot.catalog
         others = tuple(t for t in catalog.tables if t.qualified_name != table.qualified_name)
         return Snapshot(

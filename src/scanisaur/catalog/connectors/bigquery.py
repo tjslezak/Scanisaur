@@ -98,8 +98,8 @@ class ListingRow(NamedTuple):
 class SizeRow(NamedTuple):
     dataset: str
     table: str
-    rows: int | None
-    bytes: int | None
+    row_count: int | None
+    size_bytes: int | None
     #: Milliseconds since the epoch.
     last_modified: int | None
 
@@ -158,8 +158,8 @@ def assemble(project: str, rows: Rows) -> Catalog:
                 name=name,
                 columns=tuple(Column(c.column, c.type, c.description) for c in table_columns),
                 kind=_KINDS.get(listed.kind, "TABLE") if listed else "TABLE",
-                row_count=size.rows if size else None,
-                size_bytes=size.bytes if size else None,
+                row_count=size.row_count if size else None,
+                size_bytes=size.size_bytes if size else None,
                 partitioning=_partitioning(
                     table_columns,
                     listed.granularity if listed else None,
@@ -405,8 +405,8 @@ class BigQueryConnector:
     def _sizes(self, datasets: Sequence[str]) -> Iterator[SizeRow]:
         project = self._warehouse.project
         sql = " UNION ALL ".join(
-            f"SELECT dataset_id AS dataset, table_id AS table, row_count AS rows,"
-            f" size_bytes AS bytes, last_modified_time AS last_modified"
+            f"SELECT dataset_id AS dataset, table_id AS table, row_count, size_bytes,"
+            f" last_modified_time AS last_modified"
             f" FROM `{project}`.`{d}`.__TABLES__"
             for d in datasets
         )
@@ -433,7 +433,7 @@ class BigQueryConnector:
         large: defaultdict[str, list[str]] = defaultdict(list)
         for size in rows.sizes:
             key = (size.dataset, size.table)
-            if key in partitioned and (size.bytes or 0) >= PARTITIONS_FROM_BYTES:
+            if key in partitioned and (size.size_bytes or 0) >= PARTITIONS_FROM_BYTES:
                 large[size.dataset].append(size.table)
         project = self._warehouse.project
         for dataset, tables in sorted(large.items()):

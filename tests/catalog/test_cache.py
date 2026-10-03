@@ -162,3 +162,16 @@ def test_unreadable_row_discards_the_cache(
     assert cache.load() is None
     assert "can't read" in caplog.text
     assert cache.load() is None  # rebuilt empty, so the next use refetches
+
+
+def test_put_table_after_another_process_saved(tmp_path: Path) -> None:
+    path = tmp_path / "c.sqlite"
+    mine = MetadataCache(path).save(Catalog((_table("orders", "id"),)), warehouse="w")
+    newer = MetadataCache(path).save(Catalog((_table("orders", "id"),)), warehouse="w")
+    users = _table("users", "id")
+    updated = MetadataCache(path).put_table(mine, users)
+    assert updated.catalog.find("users", "d", "p") == users  # kept in memory for this check
+    loaded = MetadataCache(path).load()
+    assert loaded is not None
+    assert loaded.snapshot_id == newer.snapshot_id
+    assert loaded.catalog.find("users", "d", "p") is None  # the newer snapshot is untouched
