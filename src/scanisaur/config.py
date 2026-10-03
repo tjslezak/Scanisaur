@@ -19,6 +19,10 @@ Example::
       include_datasets: [analytics, marts]   # optional; every dataset when left out
     cache:
       ttl: 6h
+    log:                      # the decision log, one JSON line per check
+      enabled: true
+      path: ~/scanisaur-log   # a directory; the user state directory when left out
+      raw_sql: false          # true also logs each query's SQL, literals included
     keys:                     # unique column sets BigQuery tables don't declare
       acme-analytics.marts.orders: [[order_id]]
 
@@ -190,6 +194,16 @@ class CacheSettings(_Spec):
         return parse_duration(value)
 
 
+class LogSettings(_Spec):
+    """The decision log (docs/decision-log.md)."""
+
+    enabled: bool = True
+    #: The directory of monthly files; one in the user state directory when left out.
+    path: Path | None = None
+    #: Also log each query's SQL. Off by default: SQL can hold values such as emails.
+    raw_sql: bool = False
+
+
 #: Unique column sets per table, such as ``{"p.d.orders": (("order_id",),)}``.
 Keys = Mapping[str, tuple[tuple[str, ...], ...]]
 
@@ -201,6 +215,7 @@ class _ConfigSpec(_Spec):
     policy: _PolicySpec = _PolicySpec()
     planner: dict[str, Any] | None = None
     cache: CacheSettings = field(default_factory=CacheSettings)
+    log: LogSettings = field(default_factory=LogSettings)
     keys: dict[str, tuple[tuple[str, ...], ...]] = Field(default_factory=dict)
 
     @field_validator("keys")
@@ -216,7 +231,7 @@ class _ConfigSpec(_Spec):
                 raise ValueError(f"{table}: a key needs at least one column")
         return keys
 
-    @field_validator("pricing", "policy", "cache", mode="before")
+    @field_validator("pricing", "policy", "cache", "log", mode="before")
     @classmethod
     def _empty_section(cls, value: object) -> object:
         # A section whose keys are all commented out reads as null.
@@ -231,6 +246,7 @@ class Config:
     #: None when the file names no warehouse: checks then need a catalog fixture.
     warehouse: BigQueryWarehouse | DuckDBWarehouse | None = None
     cache: CacheSettings = field(default_factory=CacheSettings)
+    log: LogSettings = field(default_factory=LogSettings)
     keys: Keys = field(default_factory=dict)
 
 
@@ -282,6 +298,7 @@ def load_config_text(text: str, path: Path) -> Config:
         policy=_policy(spec.policy, price),
         warehouse=warehouse,
         cache=spec.cache,
+        log=spec.log,
         keys=spec.keys,
     )
 
