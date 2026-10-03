@@ -370,26 +370,7 @@ def adk_callback(
 def main(argv: list[str] | None = None) -> int:
     """Read one tool call from stdin and print the harness's answer. Always exits 0: a
     decision is in the JSON, so a crash here can never block the agent."""
-    parser = argparse.ArgumentParser(
-        prog="scanisaur hook",
-        description="Check the SQL in an agent's tool call. Give the same --catalog and "
-        "--config as `scanisaur serve`.",
-    )
-    parser.add_argument("--catalog", "-c", type=Path, required=True)
-    parser.add_argument("--config", type=Path)
-    parser.add_argument(
-        "--format",
-        choices=("claude", "cursor"),
-        default="claude",
-        help="The harness that runs the hook (default: claude, for Claude Code).",
-    )
-    parser.add_argument(
-        "--tool",
-        action="append",
-        help=f"Tool name pattern that carries SQL (default: {', '.join(DEFAULT_TOOLS)}).",
-    )
-    args = parser.parse_args(argv)
-
+    args = _parser().parse_args(argv)
     try:
         call = json.load(sys.stdin)
     except ValueError as error:
@@ -410,3 +391,25 @@ def main(argv: list[str] | None = None) -> int:
     if output is not None:
         print(json.dumps(output))
     return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="scanisaur hook",
+        description="Check the SQL in an agent's tool call. Give the same --catalog and "
+        "--config as `scanisaur serve`.",
+    )
+    parser.add_argument("--catalog", "-c", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument(
+        "--format",
+        choices=("claude", "cursor"),
+        default="claude",
+        help="The harness that runs the hook (default: claude, for Claude Code).",
+    )
+    parser.add_argument(
+        "--tool",
+        action="append",
+        help=f"Tool name pattern that carries SQL (default: {', '.join(DEFAULT_TOOLS)}).",
+    )
+    return parser

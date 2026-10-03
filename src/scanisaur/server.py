@@ -17,7 +17,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
 from scanisaur import __version__, tools
-from scanisaur.catalog.source import CatalogSource
+from scanisaur.catalog.source import CatalogSource, Snapshot
 from scanisaur.engine.check import Policy
 from scanisaur.engine.result import CheckResult
 from scanisaur.hook import CheckJson, claude_output, sql_from, worst
@@ -57,7 +57,12 @@ def build_server(
     server = MCPServer(
         name="scanisaur", version=__version__, instructions=INSTRUCTIONS, lifespan=lifespan
     )
+    _add_schema_tools(server, source)
+    _add_check_tools(server, source, policy)
+    return server
 
+
+def _add_schema_tools(server: MCPServer, source: CatalogSource) -> None:
     @server.tool(name="scanisaur_schema_search", annotations=_READ_ONLY)
     def schema_search(
         query: Annotated[str, Field(description="Words to look for in table and column names.")],
@@ -90,6 +95,8 @@ def build_server(
             line += f" Unknown: {', '.join(response.unknown)}."
         return _result(response, line)
 
+
+def _add_check_tools(server: MCPServer, source: CatalogSource, policy: Policy) -> None:
     @server.tool(name="scanisaur_check_sql", annotations=_READ_ONLY)
     def check_sql(
         sql: Annotated[str, Field(description="One BigQuery SQL statement, as it will run.")],
@@ -105,15 +112,17 @@ def build_server(
         command: Annotated[str, Field(description="A shell command that may run SQL.")] = "",
     ) -> CallToolResult:
         """For Claude Code's PreToolUse hook only. Agents: call scanisaur_check_sql."""
-        snapshot = source.current()
-        results = [tools.check_sql(found, snapshot, policy) for found in sql_from(sql, command)]
-        if not results:
-            return CallToolResult(content=[TextContent(type="text", text="")])
-        output = claude_output(worst([cast(CheckJson, r.model_dump(mode="json")) for r in results]))
-        text = "" if output is None else json.dumps(output)
+        text = _hook_answer(sql_from(sql, command), source.current(), policy)
         return CallToolResult(content=[TextContent(type="text", text=text)])
 
-    return server
+
+def _hook_answer(queries: list[str], snapshot: Snapshot, policy: Policy) -> str:
+    """Claude Code's hook answer as JSON text, or "" to say nothing."""
+    results = [tools.check_sql(sql, snapshot, policy).model_dump(mode="json") for sql in queries]
+    if not results:
+        return ""
+    output = claude_output(worst([cast(CheckJson, result) for result in results]))
+    return "" if output is None else json.dumps(output)
 
 
 def _result(model: BaseModel, line: str) -> CallToolResult:

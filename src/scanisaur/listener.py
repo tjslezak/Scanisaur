@@ -34,18 +34,36 @@ async def hook_listener(
     Several MCP clients can each start ``serve`` for the same project. The first one to
     bind answers the hooks; the others serve their MCP session only.
     """
-    if not hasattr(socket, "AF_UNIX"):
+    server = await _start(path, source, policy) if await _claim(path) else None
+    if server is None:
         yield None
         return
+    path.chmod(0o600)
+    log.info("answering hooks on %s", path)
+    try:
+        yield server
+    finally:
+        server.close()
+        await server.wait_closed()
+        path.unlink(missing_ok=True)
+
+
+async def _claim(path: Path) -> bool:
+    """True when this server should listen on ``path``: no one else answers there."""
+    if not hasattr(socket, "AF_UNIX"):
+        return False
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not private_dir(path.parent):
         log.warning("not answering hooks: %s isn't private to this user", path.parent)
-        yield None
-        return
+        return False
     if await _in_use(path):
-        yield None
-        return
+        return False
     path.unlink(missing_ok=True)  # left behind by a server that didn't shut down cleanly
+    return True
+
+
+async def _start(path: Path, source: CatalogSource, policy: Policy) -> asyncio.Server | None:
+    """Listen on ``path``; None when another server bound it first."""
 
     async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -58,19 +76,10 @@ async def hook_listener(
             writer.close()
 
     try:
-        server = await asyncio.start_unix_server(answer, path=str(path), limit=MAX_REQUEST)
-    except OSError as error:  # another server bound it first
+        return await asyncio.start_unix_server(answer, path=str(path), limit=MAX_REQUEST)
+    except OSError as error:
         log.warning("not answering hooks on %s: %s", path, error)
-        yield None
-        return
-    path.chmod(0o600)
-    log.info("answering hooks on %s", path)
-    try:
-        yield server
-    finally:
-        server.close()
-        await server.wait_closed()
-        path.unlink(missing_ok=True)
+        return None
 
 
 def _respond(line: bytes, source: CatalogSource, policy: Policy) -> str:
