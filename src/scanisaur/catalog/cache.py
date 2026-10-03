@@ -8,6 +8,7 @@ version of this module is emptied and refetched.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import os
 import sqlite3
@@ -77,13 +78,18 @@ class MetadataCache:
             if row is None:
                 return None
             snapshot_id, fetched_at, project, dataset = row
-            bodies = db.execute(
-                "SELECT body FROM tables WHERE snapshot_id = ?", (snapshot_id,)
-            ).fetchall()
-        try:
-            tables = tuple(_TABLE_JSON.validate_json(body) for (body,) in bodies)
-        except ValidationError as error:
-            logger.warning("%s: discarding a cache this version can't read: %s", self.path, error)
+            bodies = db.execute("SELECT body FROM tables WHERE snapshot_id = ?", (snapshot_id,))
+            try:
+                # Parsed row by row, so the raw JSON is never all in memory at once.
+                tables = tuple(_TABLE_JSON.validate_json(body) for (body,) in bodies)
+            except ValidationError as error:
+                unreadable: ValidationError | None = error
+            else:
+                unreadable = None
+        if unreadable is not None:
+            logger.warning(
+                "%s: discarding a cache this version can't read: %s", self.path, unreadable
+            )
             with self._connect() as db:
                 _rebuild(db, force=True)
             return None
@@ -189,19 +195,18 @@ class MetadataCache:
     def _search_without_fts(
         db: sqlite3.Connection, terms: list[str], limit: int
     ) -> list[tuple[str, str, float]]:
-        hits: list[tuple[str, str, float]] = []
         snapshot = db.execute("SELECT max(id) FROM snapshots").fetchone()[0]
-        for (body,) in db.execute("SELECT body FROM tables WHERE snapshot_id = ?", (snapshot,)):
-            table = _TABLE_JSON.validate_json(body)
-            candidates = [("", _words(table.qualified_name, table.description))] + [
-                (c.name, _words(c.name, c.description)) for c in table.columns
-            ]
-            for column, words in candidates:
-                score = sum(term.lower() in words.lower() for term in terms)
-                if score:
-                    hits.append((table.qualified_name, column, float(score)))
-        hits.sort(key=lambda hit: -hit[2])
-        return hits[:limit]
+        rows = db.execute("SELECT body FROM tables WHERE snapshot_id = ?", (snapshot,))
+
+        def hits() -> Iterator[tuple[str, str, float]]:
+            for (body,) in rows:
+                table = _TABLE_JSON.validate_json(body)
+                yield from _scored(table.qualified_name, "", table.description, terms)
+                for c in table.columns:
+                    yield from _scored(table.qualified_name, c.name, c.description, terms)
+
+        # Keeps only the best ``limit`` while streaming, rather than sorting every hit.
+        return heapq.nlargest(limit, hits(), key=lambda hit: hit[2])
 
     @staticmethod
     def _has_search(db: sqlite3.Connection) -> bool:
@@ -240,6 +245,15 @@ def _rebuild(db: sqlite3.Connection, *, force: bool = False) -> None:
         with suppress(sqlite3.OperationalError):  # no FTS5 in this SQLite build
             db.execute(_SEARCH_SCHEMA)
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _scored(
+    table: str, column: str, description: str, terms: list[str]
+) -> Iterator[tuple[str, str, float]]:
+    """``(table, column, score)`` when any term is in the name or description."""
+    words = _words(column or table, description).lower()
+    if score := sum(term.lower() in words for term in terms):
+        yield table, column, float(score)
 
 
 def _words(name: str, description: str) -> str:

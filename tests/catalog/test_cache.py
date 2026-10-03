@@ -193,3 +193,16 @@ def test_concurrent_first_opens_dont_collide(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
     assert errors == []
+
+
+def test_search_without_fts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(MetadataCache, "_has_search", staticmethod(lambda db: False))
+    cache = MetadataCache(tmp_path / "c.sqlite")
+    orders = Table("p", "d", "orders", (Column("order_id", "INT64", "the order"),))
+    cache.save(Catalog((orders, _table("users", "user_id"))), warehouse="w")
+    hits = cache.search("order id", 2)
+    assert [(h.table, h.column, h.score) for h in hits] == [
+        ("p.d.orders", "order_id", 2.0),
+        ("p.d.orders", None, 1.0),
+    ]
+    assert cache.search("nothing", 5) == []
