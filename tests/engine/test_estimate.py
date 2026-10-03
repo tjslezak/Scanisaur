@@ -888,7 +888,12 @@ class TestSecondReview:
 
 class TestFloor:
     def test_unknown_unit_gives_none_rather_than_day(self) -> None:
-        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), "MINUTE") is None
+        # Only the units _trunc models become a _Floor step; anything else can't be estimated.
+        tree = sqlglot.parse_one(
+            "TIMESTAMP_TRUNC(TIMESTAMP '2026-10-03 05:29:00', MINUTE)", dialect="bigquery"
+        )
+        assert estimate_module._time_value(tree, NOW.replace(tzinfo=None)) is None
 
     def test_day(self) -> None:
-        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), "DAY") == datetime(2026, 10, 3)
+        day = estimate_module._DAY
+        assert estimate_module._floor(datetime(2026, 10, 3, 5, 29), day) == datetime(2026, 10, 3)
