@@ -102,7 +102,7 @@ def _returned(scope: Scope) -> list[exp.Table]:
     if source is None or source not in scope.selected_sources:
         return []
     for join in expression.args.get("joins") or ():
-        if join.args.get("side", "").upper() not in ("LEFT", "FULL"):
+        if join.side.upper() not in ("LEFT", "FULL"):
             return []  # an inner join or UNNEST may drop or repeat rows
     where = expression.args.get("where")
     if where is not None and not _on_source_only(where, source):

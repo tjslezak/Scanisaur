@@ -111,3 +111,26 @@ def test_types_that_cant_be_worked_out(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(type_mismatch, "annotate_types", fail)
     assert mismatches("o.user_id = o.order_id") == []
+
+
+def test_any_compares_with_the_subquery_column() -> None:
+    assert mismatches("o.user_id = ANY (SELECT user_id FROM orders)") == []
+
+
+def test_padded_date_literal() -> None:
+    # BigQuery refuses it ("Could not cast literal"), so it isn't read as midnight.
+    assert mismatches("o.created_at <= ' 2026-09-30 '") == []
+
+
+def test_quoted_text_against_a_number() -> None:
+    (finding,) = mismatches("o.order_id = 'x'")
+    assert finding.fix is not None
+    assert "without quotes" not in finding.fix
+    (finding,) = mismatches("o.order_id = '42'")
+    assert finding.fix == "Write the number without quotes, as `42`."
+
+
+def test_not_turns_the_midnight_message_around() -> None:
+    assert mismatches("NOT (o.created_at <= '2026-09-30')") == []
+    (finding,) = mismatches("NOT (o.user_id = 42)")
+    assert finding.message.startswith("BigQuery refuses")

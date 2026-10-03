@@ -37,7 +37,9 @@ _KNOWN = _NUMBERS | _FROM_STRING_LITERAL | {"STRING", "BYTES", "BOOL"}
 _MOMENTS = frozenset({"DATETIME", "TIMESTAMP"})
 #: Truncating to these units, or coarser ones, leaves midnight.
 _FINE_UNITS = frozenset({"HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND"})
-_DATE_ONLY = re.compile(r"\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*")
+#: BigQuery refuses a date literal with spaces around it ("Could not cast literal").
+_DATE_ONLY = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
 _EQUALITIES = ("=", "!=", "IN", "IS NOT DISTINCT FROM")
 _OPERATORS: dict[type[exp.Expr], str] = {
     exp.EQ: "=",
@@ -153,7 +155,8 @@ def _finding(node: exp.Expr, text: tuple[str, str]) -> Finding:
 
 def _type(node: exp.Expr) -> str | None:
     """The BigQuery type of an expression, when it is a plain scalar type."""
-    if isinstance(node, exp.Null) or node.type is None:
+    # `x = ANY (SELECT ...)` compares with the subquery's column; sqlglot types the ANY as BOOL.
+    if isinstance(node, exp.Null | exp.Any | exp.All) or node.type is None:
         return None
     name = node.type.sql(dialect=DIALECT).upper()
     name = name.partition("(")[0].strip()  # NUMERIC(10, 2)
@@ -189,7 +192,7 @@ def _refused_fix(pair: _Pair, left: str, right: str) -> str:
         text, number = sides["STRING"], sides[left if left != "STRING" else right]
         if isinstance(number, exp.Literal):
             return f"Quote the value, as `'{number.name}'`, if the column holds text."
-        if _string_literal(text):
+        if _string_literal(text) and _NUMBER.fullmatch(text.name):
             return f"Write the number without quotes, as `{text.name}`."
         return (
             f"Convert one side to the other's type, as `CAST({_show(number)} AS STRING)`, "
@@ -220,6 +223,8 @@ def _midnight(node: exp.Expr, pair: _Pair, left: str, right: str) -> tuple[str, 
         return None
     if op in (">=", "<") or _at_midnight(moment):
         return None  # from midnight on, or before it: whole days either way
+    if isinstance(node.find_ancestor(exp.Not, exp.Query), exp.Not):
+        return None  # NOT turns what the message says around
     shown, column = _show(node), _show(moment)
     zone = " UTC" if kind == "TIMESTAMP" else ""
     opening = f"`{shown}` compares {kind} `{column}` with a date, which means midnight{zone}"
