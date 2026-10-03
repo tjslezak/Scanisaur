@@ -122,6 +122,7 @@ tables:
     bytes: 2048
     partitioning: {column: event_date, granularity: MONTH, required: true}
     clustering: [user_id]
+    keys: [[user_id, event_date]]
     description: Raw events
     columns:
       event_date: DATE
@@ -143,6 +144,7 @@ tables:
             partitioning=Partitioning("event_date", "MONTH", required=True),
             clustering=("user_id",),
             description="Raw events",
+            keys=(("user_id", "event_date"),),
         )
 
     def test_ingestion_time_partitioning(self, tmp_path: Path) -> None:
@@ -153,6 +155,16 @@ tables:
         (table,) = load_catalog(path).tables
         assert table.partitioning == Partitioning(None, "DAY")
         assert PARTITIONTIME in table.pseudo_columns
+
+    def test_keys_unknown_or_none(self, tmp_path: Path) -> None:
+        path = write(
+            tmp_path,
+            "tables:\n  - {name: p.d.t, columns: {a: INT64}}\n"
+            "  - {name: p.d.u, keys: [], columns: {a: INT64}}\n",
+        )
+        unknown, none = load_catalog(path).tables
+        assert unknown.keys is None
+        assert none.keys == ()
 
     def test_partitions(self, tmp_path: Path) -> None:
         path = write(
@@ -199,6 +211,11 @@ tables:
                 "tables:\n  - {name: p.d.t, partitioning: {column: b}, columns: {a: INT64}}\n",
                 "unknown columns: ['b']",
             ),
+            (
+                "tables:\n  - {name: p.d.t, keys: [[a, B]], columns: {a: INT64}}\n",
+                "keys name unknown columns: ['B']",
+            ),
+            ("tables:\n  - {name: p.d.t, keys: [[]], columns: {a: INT64}}\n", "at least one"),
             (
                 "tables:\n  - {name: p.d.t, columns: {a: NOT A TYPE}}\n",
                 "column 'a' has a type that isn't valid: 'NOT A TYPE'",

@@ -10,3 +10,11 @@ tables:
   - bigquery-public-data.thelook_ecommerce.order_items
   - bigquery-public-data.thelook_ecommerce.users
   - bigquery-public-data.thelook_ecommerce.events
+
+# Unique keys, which thelook_ecommerce doesn't declare (spike 0001). SCN007 reads them;
+# `run.py report` adds them to catalog.yaml's snapshot.
+keys:
+  bigquery-public-data.thelook_ecommerce.orders: [[order_id]]
+  bigquery-public-data.thelook_ecommerce.order_items: [[id]]
+  bigquery-public-data.thelook_ecommerce.users: [[id]]
+  bigquery-public-data.thelook_ecommerce.events: [[id]]

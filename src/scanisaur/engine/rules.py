@@ -14,6 +14,8 @@ PRUNING_DEFEATED = "SCN004"
 SELECT_STAR = "SCN005"
 #: Sources joined with nothing, or only a non-equality, relating them: every row pairs.
 CROSS_JOIN = "SCN006"
+#: A join on columns that aren't a unique key, which repeats rows a count or sum then counts.
+FAN_OUT = "SCN007"
 #: A comparison between types BigQuery refuses to compare, or compares in a way that
 #: changes the answer: a date against a timestamp, an integer against a float.
 TYPE_MISMATCH = "SCN008"

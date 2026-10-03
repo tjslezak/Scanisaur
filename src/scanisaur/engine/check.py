@@ -16,6 +16,7 @@ from scanisaur.catalog.model import Catalog, Table
 from scanisaur.engine.cross_join import cross_join_findings
 from scanisaur.engine.estimate import estimate
 from scanisaur.engine.facts import FactsError, QueryFacts, TooComplexError, extract
+from scanisaur.engine.fan_out import fan_out_findings
 from scanisaur.engine.parse import (
     DIALECT,
     SqlParseError,
@@ -156,7 +157,7 @@ def _rule_findings(
     resolution: Resolution, policy: Policy, now: datetime, *, returns_rows: bool
 ) -> tuple[list[Finding], QueryFacts | None]:
     """Findings from the rules that read the qualified tree (SCN008) or per-table facts
-    (SCN003 to SCN006, SCN009, SCN011), and the facts for the cost estimate.
+    (SCN003 to SCN007, SCN009, SCN011), and the facts for the cost estimate.
     ``returns_rows`` is False for a statement that writes its result to a table."""
     try:
         facts = extract(resolution)
@@ -185,6 +186,7 @@ def _rule_findings(
         block_pairs=policy.cross_join_block_pairs,
         sampled=_sampled(resolution),
     )
+    fan_out = fan_out_findings(facts)
     mismatches = type_mismatch_findings(resolution)
     unbounded: list[Finding] = []
     if returns_rows and not _rejected(pruning):
@@ -195,7 +197,7 @@ def _rule_findings(
             warn_rows=policy.unbounded_result_rows,
             sampled=_sampled(resolution),
         )
-    return _ordered([*pruning, *star, *cross, *mismatches, *unbounded]), facts
+    return _ordered([*pruning, *star, *cross, *fan_out, *mismatches, *unbounded]), facts
 
 
 def _ordered(findings: list[Finding]) -> list[Finding]:

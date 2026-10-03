@@ -1,7 +1,7 @@
 """Warehouse-neutral catalog model.
 
-A catalog is a snapshot of warehouse metadata: tables, columns, partitioning and
-sizes. It never contains row data.
+A catalog is a snapshot of warehouse metadata: tables, columns, partitioning, sizes
+and unique keys. It never contains row data.
 """
 
 from __future__ import annotations
@@ -63,6 +63,10 @@ class Table:
     #: Partitions, or a wildcard family's shards, when the catalog has them. Without them,
     #: cost estimates can't tell how much a partition filter keeps.
     partitions: tuple[Partition, ...] = ()
+    #: Sets of columns whose values are unique in the table, such as ``(("order_id",),)``.
+    #: BigQuery doesn't enforce its primary keys and most tables declare none, so these
+    #: usually come from configuration. None when not known; empty when no set is unique.
+    keys: tuple[tuple[str, ...], ...] | None = None
 
     @property
     def qualified_name(self) -> str:

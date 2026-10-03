@@ -13,7 +13,7 @@ The results are in [docs/benchmark.md](../docs/benchmark.md).
 
 | File | What it holds |
 | --- | --- |
-| `tables.yaml` | The public tables, from #10: required and optional partition filters, clustered or not, daily shards, and a small schema with no partitions |
+| `tables.yaml` | The public tables, from #10: required and optional partition filters, clustered or not, daily shards, and a small schema with no partitions. Also the unique keys of that schema, which BigQuery doesn't declare, for SCN007 |
 | `queries.yaml` | About 60 queries, in trap-and-fix pairs |
 | `catalog.yaml` | The tables' metadata: columns, sizes, partitioning, clustering and every partition's size. Generated |
 | `dry_runs.json` | The bytes each query's dry run reported, or BigQuery's error. Generated |

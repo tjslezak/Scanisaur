@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN007",
+      "severity": "warn",
+      "message": "`o` (Orders) and `i` (order_items) are matched on `i.user_id = o.user_id`, a unique key of neither, so each row of one pairs with every matching row of the other: the result can hold more rows than both, and counts or sums over it are multiplied.",
+      "fix": "Match on a unique key of one side, for example add `o.order_id = i.order_id`, or reduce one side to one row per matched value with GROUP BY or DISTINCT first.",
+      "line": 3,
+      "column": 6
+    }
+  ],
+  "tables": [
+    "proj.analytics.Orders",
+    "proj.analytics.order_items"
+  ],
+  "estimate": {
+    "bytes_low": 6730809344,
+    "bytes_high": 17440964608,
+    "confidence": "low",
+    "usd_low": 0.0383,
+    "usd_high": 0.0991
+  }
+}
