@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "findings": [],
+  "tables": [
+    "proj.analytics.users",
+    "proj.analytics.Orders",
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 451936256,
+    "bytes_high": 362511597568,
+    "confidence": "low",
+    "usd_low": 0.0026,
+    "usd_high": 2.0606
+  }
+}

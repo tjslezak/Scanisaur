@@ -13,6 +13,7 @@ from typing import Literal
 from sqlglot import exp
 
 from scanisaur.catalog.model import Catalog, Table
+from scanisaur.engine.cross_join import cross_join_findings
 from scanisaur.engine.estimate import estimate
 from scanisaur.engine.facts import FactsError, QueryFacts, TooComplexError, extract
 from scanisaur.engine.parse import (
@@ -57,6 +58,10 @@ class Policy:
     #: On-demand price in US dollars per TiB billed; None for capacity (Editions) pricing,
     #: which gets estimates in bytes only.
     price_per_tib: float | None = 6.25
+    #: SCN006 warns from this many pairs of rows, and blocks from this many when every
+    #: side's size is known. Slot time grows by about 10 seconds per billion pairs (#23).
+    cross_join_warn_pairs: int = 10**8
+    cross_join_block_pairs: int = 10**10
 
 
 DEFAULT_POLICY = Policy()
@@ -136,7 +141,7 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy, now: datetime) -> _Anal
 def _rule_findings(
     resolution: Resolution, policy: Policy, now: datetime
 ) -> tuple[list[Finding], QueryFacts | None]:
-    """Findings from the rules that read per-table facts (SCN003 to SCN005, SCN011), and
+    """Findings from the rules that read per-table facts (SCN003 to SCN006, SCN011), and
     the facts for the cost estimate."""
     try:
         facts = extract(resolution)
@@ -155,7 +160,14 @@ def _rule_findings(
     star = select_star_findings(
         facts, now, sampled=_sampled(resolution), rejected=_rejected(pruning)
     )
-    findings = sorted([*pruning, *star], key=lambda f: (f.line or 0, f.column or 0, f.rule))
+    cross = cross_join_findings(
+        facts,
+        now,
+        warn_pairs=policy.cross_join_warn_pairs,
+        block_pairs=policy.cross_join_block_pairs,
+        sampled=_sampled(resolution),
+    )
+    findings = sorted([*pruning, *star, *cross], key=lambda f: (f.line or 0, f.column or 0, f.rule))
     return findings, facts
 
 

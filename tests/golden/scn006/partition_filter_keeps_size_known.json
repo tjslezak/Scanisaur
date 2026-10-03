@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "block",
+      "message": "`t` (trends) and `d` (daily_sample) are joined with nothing relating them, so every row of one pairs with every row of the other: about 263.8 billion pairs. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 2,
+      "column": 53
+    }
+  ],
+  "tables": [
+    "proj.web.trends",
+    "proj.web.daily_sample"
+  ],
+  "estimate": {
+    "bytes_low": 12582912,
+    "bytes_high": 12582912,
+    "confidence": "high",
+    "usd_low": 0.0001,
+    "usd_high": 0.0001
+  }
+}
