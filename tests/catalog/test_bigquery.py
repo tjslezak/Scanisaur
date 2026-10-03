@@ -353,12 +353,17 @@ def test_check_access_without_credentials() -> None:
     assert (probe.name, probe.status) == ("credentials", "fail")
 
 
-def test_fetch_query_history() -> None:
+@pytest.mark.parametrize("location", ["EU", "US", "us-central1"])
+def test_fetch_query_history(location: str) -> None:
     client = FakeClient()
     since = datetime(2026, 9, 1, tzinfo=UTC)
-    [run] = _connector(client).fetch_query_history(since)
+    [run] = _connector(client, location=location).fetch_query_history(since)
     assert (run.job_id, run.user, run.sql, run.bytes_billed) == ("j1", "a@x", "SELECT 1", 10)
-    assert "`proj`.`region-eu`.INFORMATION_SCHEMA.JOBS_BY_PROJECT" in client.queries[-1]
+    assert (
+        f"`proj`.`region-{location.lower()}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT"
+        in client.queries[-1]
+    )
+    assert client.locations == [location]
 
 
 def test_fetch_query_history_denied() -> None:

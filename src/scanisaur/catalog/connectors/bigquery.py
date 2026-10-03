@@ -377,10 +377,11 @@ class BigQueryConnector:
         """SELECT jobs from ``JOBS_BY_PROJECT``, which needs ``bigquery.jobs.listAll``
         (roles/bigquery.resourceViewer). The history holds every query's full text,
         literal values included (docs/spikes/0002-job-history-comments.md)."""
+        location = self._warehouse.location
         sql = f"""
             SELECT job_id, creation_time AS started, user_email AS user, query AS sql,
                    IFNULL(total_bytes_billed, 0) AS bytes_billed
-            FROM {self._region("JOBS_BY_PROJECT")}
+            FROM {self._region("JOBS_BY_PROJECT", location)}
             WHERE creation_time >= @since AND job_type = 'QUERY'
               AND statement_type = 'SELECT' AND state = 'DONE'
               AND NOT EXISTS (SELECT 1 FROM UNNEST(labels) WHERE key = 'tool'
@@ -390,7 +391,7 @@ class BigQueryConnector:
         parameters = [bigquery.ScalarQueryParameter("since", "TIMESTAMP", since)]
         try:
             with _errors():
-                rows = list(self._query(sql, parameters))
+                rows = list(self._query(sql, parameters, location=location))
         except ConnectorError as error:
             raise ConnectorError(
                 f"{error}. Reading query history needs bigquery.jobs.listAll on the project, "
