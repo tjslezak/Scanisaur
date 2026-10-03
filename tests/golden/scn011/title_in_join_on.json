@@ -3,6 +3,14 @@
   "verdict": "warn",
   "findings": [
     {
+      "rule": "SCN006",
+      "severity": "warn",
+      "message": "`s` (store_sales) and `p` (pageviews) are joined with nothing relating them, so every row of one pairs with every row of the other: up to about 28 quadrillion pairs, fewer if filters or joins leave fewer rows. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 3,
+      "column": 10
+    },
+    {
       "rule": "SCN011",
       "severity": "warn",
       "message": "`proj.web.pageviews` is clustered by `wiki`, then `title`. The query filters `title` but doesn't limit `wiki` to particular values, so BigQuery may skip far fewer blocks than it would with a `wiki` filter as well.",

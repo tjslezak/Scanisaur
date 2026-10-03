@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "findings": [],
+  "tables": [
+    "proj.analytics.users",
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 0,
+    "bytes_high": 0,
+    "confidence": "high",
+    "usd_low": 0.0,
+    "usd_high": 0.0
+  }
+}

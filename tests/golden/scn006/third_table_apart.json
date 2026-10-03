@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "warn",
+      "message": "Nothing relates `s` (store_sales) to the join of `e` (events) and `u` (users), so every row of one pairs with every row of the other: up to about 480 trillion pairs, fewer if filters or joins leave fewer rows. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 4,
+      "column": 16
+    }
+  ],
+  "tables": [
+    "proj.analytics.events",
+    "proj.analytics.users",
+    "proj.web.store_sales"
+  ],
+  "estimate": {
+    "bytes_low": 441450496,
+    "bytes_high": 356831461376,
+    "confidence": "low",
+    "usd_low": 0.0025,
+    "usd_high": 2.0284
+  }
+}

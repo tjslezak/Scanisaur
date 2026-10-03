@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "warn",
+      "message": "`u` (users) and `o` (Orders) are joined with nothing relating them, so every row of one pairs with every row of the other: up to about 400 trillion pairs, fewer if filters or joins leave fewer rows. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them, for example `u.user_id = o.user_id`. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 3,
+      "column": 34
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.analytics.Orders"
+  ],
+  "estimate": {
+    "bytes_low": 10485760,
+    "bytes_high": 640679936,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 0.0036
+  }
+}

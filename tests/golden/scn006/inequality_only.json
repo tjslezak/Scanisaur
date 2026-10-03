@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN003",
+      "severity": "warn",
+      "message": "`proj.web.trends` is partitioned by `refresh_date`, but the query doesn't filter on it, so it reads every partition (3.2 GB in all).",
+      "fix": "Add a filter on `refresh_date`, for example `refresh_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`.",
+      "line": 3,
+      "column": 10
+    },
+    {
+      "rule": "SCN006",
+      "severity": "block",
+      "message": "`u` (users) and `t` (trends) are joined only by `t.refresh_date > u.signup_date`, which isn't an equality, so BigQuery compares every pair: about 219.9 trillion pairs. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add an equality between the two sides alongside the comparison, so BigQuery matches rows by it before comparing.",
+      "line": 3,
+      "column": 10
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.web.trends"
+  ],
+  "estimate": {
+    "bytes_low": 393216000,
+    "bytes_high": 393216000,
+    "confidence": "high",
+    "usd_low": 0.0022,
+    "usd_high": 0.0022
+  }
+}

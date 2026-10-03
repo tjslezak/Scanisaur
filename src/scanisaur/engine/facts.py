@@ -16,7 +16,8 @@ are built from ``resolve()``'s qualified tree and follow what BigQuery's planner
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterable, Iterator, Mapping
+import re
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Literal, NamedTuple
 
@@ -59,6 +60,8 @@ _NULL_REJECTING = (
 )
 #: ...unless one of these turns a NULL into a value.
 _NULL_TOLERANT = (exp.Coalesce, exp.If, exp.Case, exp.Is)
+#: Names that need no backticks.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class FactsError(ValueError):
@@ -131,11 +134,41 @@ class TableFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class DerivedSource:
+    """A CTE or subquery joined as a source."""
+
+    alias: str
+    #: At most this many rows, from its LIMIT or its shape; None when that isn't known.
+    rows: int | None
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class Product:
+    """A SELECT whose sources fall into groups that no equality in WHERE, ON or USING
+    connects, so joining them pairs every row of one group with every row of another."""
+
+    #: Each group of sources the equalities connect, in FROM order. A source with at most
+    #: one row, and an UNNEST, which belongs to the source whose array it reads, are left
+    #: out.
+    groups: tuple[tuple[TableFacts | DerivedSource, ...], ...]
+    #: A condition that does relate the groups but isn't an equality, as `a.ts < b.ts`, so
+    #: BigQuery compares every pair; None when nothing relates them.
+    inequality: str | None
+    #: Where the second group is joined.
+    position: tuple[int | None, int | None] = field(default=(None, None), compare=False)
+    #: The (alias, column) pairs that conditions relating sources read. They filter pairs
+    #: rather than a source's own rows, so they don't make a source's size unknown.
+    relating: frozenset[tuple[str, str]] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class QueryFacts:
     tables: tuple[TableFacts, ...]
     joins: tuple[Join, ...]
     outer_limit: int | None
     outer_aggregated: bool
+    products: tuple[Product, ...] = ()
 
 
 def facts_from_sql(sql: str, catalog: Catalog) -> QueryFacts:
@@ -169,7 +202,8 @@ def extract(resolution: Resolution) -> QueryFacts:
     walk = _Walk(resolution.references, scopes)
     walk.run()
     limit, aggregated = _outer_shape(_effective_root(scopes[-1]).expression)
-    return QueryFacts(walk.table_facts(), tuple(walk.joins), limit, aggregated)
+    products = tuple(dict.fromkeys(walk.products))
+    return QueryFacts(walk.table_facts(), tuple(walk.joins), limit, aggregated, products)
 
 
 class _Pushed(NamedTuple):
@@ -243,6 +277,7 @@ class _Walk:
         }
         self._unnest_fields_seen: dict[tuple[int, object], frozenset[tuple[str, ...]] | None] = {}
         self.joins: list[Join] = []
+        self.products: list[Product] = []
         self._schedule(scopes[-1], None, (), 1)
 
     def run(self) -> None:
@@ -404,6 +439,7 @@ class _Walk:
         for column in reads.columns:
             paths.setdefault(column.table, set()).update(self._read_paths(column, reading))
         stars = stars_of(select)
+        visited: dict[str, TableFacts] = {}
         for alias, table in tables.items():
             starred = [s for s in stars if s.qualifier.lower() in ("", alias.lower())]
             table_paths: frozenset[tuple[str, ...]] | None = None
@@ -413,21 +449,23 @@ class _Walk:
                 columns = frozenset(c.name.lower() for c in reads.columns if c.table == alias)
                 if any(len(path) > 1 for path in paths.get(alias, ())):
                     table_paths = frozenset(paths[alias])
-            self._visited.append(
-                TableFacts(
-                    table=table,
-                    alias=alias,
-                    columns=columns,
-                    star=bool(starred),
-                    star_except=frozenset(e.name.lower() for s in starred for e in s.excepted),
-                    predicates=tuple(predicates[alias]),
-                    scans=runs,
-                    linked=linked.of(alias),
-                    name=names[alias],
-                    position=positions[alias],
-                    paths=table_paths,
-                )
+            visited[alias] = TableFacts(
+                table=table,
+                alias=alias,
+                columns=columns,
+                star=bool(starred),
+                star_except=frozenset(e.name.lower() for s in starred for e in s.excepted),
+                predicates=tuple(predicates[alias]),
+                scans=runs,
+                linked=linked.of(alias),
+                name=names[alias],
+                position=positions[alias],
+                paths=table_paths,
             )
+            self._visited.append(visited[alias])
+        product = _product(scope, select, visited, derived, self._output_names)
+        if product is not None:
+            self.products.append(product)
         if id(scope) not in self._joined:
             self._joined.add(id(scope))
             self.joins.extend(_joins(scope, select, tables))
@@ -506,6 +544,174 @@ class _Walk:
             elif isinstance(source, Scope) and isinstance(source.expression, exp.Query):
                 derived[alias] = source
         return tables, derived, names, positions
+
+
+def _product(
+    scope: Scope,
+    select: exp.Select,
+    tables: Mapping[str, TableFacts],
+    derived: Mapping[str, Scope],
+    output_names: Callable[[exp.Expr], list[str]],
+) -> Product | None:
+    """The groups of sources this SELECT joins with no equality connecting them, when
+    there is more than one. Only WHERE, ON and USING count: HAVING and QUALIFY run after
+    the join, and BigQuery reorders joins, so a later condition still connects."""
+    members: dict[str, TableFacts | DerivedSource] = dict(tables)
+    for alias, source in derived.items():
+        bound = _row_bound(source.expression)
+        if bound is None or bound > 1:  # one row pairs with each row once
+            node = scope.selected_sources[alias][0]
+            members[alias] = DerivedSource(alias, bound, _written_at(node))
+    if len(members) < 2:
+        return None
+    # An UNNEST belongs to the source whose array it reads; one of a literal or generated
+    # array, such as GENERATE_DATE_ARRAY, to none.
+    owners = {
+        alias: frozenset(c.table for c in node.find_all(exp.Column) if c.table in members)
+        for alias, (node, _source) in scope.selected_sources.items()
+        if isinstance(node, exp.Unnest)
+    }
+
+    def sources_of(node: exp.Expr) -> frozenset[str]:
+        found: set[str] = set()
+        for column in _local_columns(node):
+            found |= {column.table} if column.table in members else owners.get(column.table, set())
+        return frozenset(found)
+
+    equal, related = _Groups(members), _Groups(members)
+    inequality: str | None = None
+    relating: set[tuple[str, str]] = set()
+    where = select.args.get("where")
+    conditions = list(_conjuncts(where.this)) if where is not None else []
+    for join in select.args.get("joins") or []:
+        conditions += _conjuncts(join.args.get("on"))
+    for condition in conditions:
+        sources = sources_of(condition)
+        if len(sources) < 2:
+            continue
+        relating |= {(c.table, c.name.lower()) for c in _local_columns(condition)}
+        related.connect(sources)
+        if _is_equality(condition, sources_of):
+            equal.connect(sources)
+        elif inequality is None:
+            inequality = _shown(condition)
+    for join, earlier in _joins_in_order(select):
+        target = join.alias_or_name
+        for key in join.args.get("using") or []:
+            name = key.name.lower()
+            matches = {
+                alias
+                for alias in earlier
+                if alias in members
+                and name in _output_columns(alias, tables, derived, output_names)
+            }
+            if target in members and matches:
+                equal.connect({target, *matches})
+                related.connect({target, *matches})
+    order = [_from_alias(select), *(j.alias_or_name for j in select.args.get("joins") or [])]
+    groups = equal.groups(order)
+    if len(groups) < 2:
+        return None
+    return Product(
+        groups=tuple(tuple(members[alias] for alias in group) for group in groups),
+        inequality=inequality if len(related.groups(order)) == 1 else None,
+        position=members[groups[1][0]].position,
+        relating=frozenset(relating),
+    )
+
+
+def _shown(condition: exp.Expr) -> str:
+    """A condition as an agent would write it: qualified, without needless backticks."""
+    shown = condition.copy()
+    for identifier in shown.find_all(exp.Identifier):
+        if _PLAIN_NAME.fullmatch(identifier.name):
+            identifier.set("quoted", False)
+    return shown.sql(dialect=DIALECT)
+
+
+def _written_at(node: exp.Expr) -> tuple[int | None, int | None]:
+    """Where a node is written: its own position, or the first one found inside it, as
+    for a subquery in parentheses."""
+    for inner in node.walk():
+        where = position(inner)
+        if where[0] is not None:
+            return where
+    return None, None
+
+
+class _Groups:
+    """Sources joined into groups by the conditions that connect them (union-find)."""
+
+    def __init__(self, members: Iterable[str]) -> None:
+        self._parent = {member: member for member in members}
+
+    def _root(self, member: str) -> str:
+        while self._parent[member] != member:
+            member = self._parent[member]
+        return member
+
+    def connect(self, members: Iterable[str]) -> None:
+        roots = [self._root(m) for m in members]
+        for root in roots[1:]:
+            self._parent[root] = roots[0]
+
+    def groups(self, order: list[str]) -> list[list[str]]:
+        """The groups, each in FROM order, ordered by their first member."""
+        ranked = [m for m in order if m in self._parent]
+        ranked += [m for m in self._parent if m not in ranked]
+        groups: dict[str, list[str]] = {}
+        for member in ranked:
+            groups.setdefault(self._root(member), []).append(member)
+        return list(groups.values())
+
+
+def _is_equality(condition: exp.Expr, sources_of: Callable[[exp.Expr], frozenset[str]]) -> bool:
+    """True for an equality between different sources, which BigQuery joins by matching
+    values. An OR of them counts too: measured, it took 0.7 slot-seconds where `<` took
+    155 (#23)."""
+    return all(
+        any(_equates(node, sources_of) for node in _conjuncts(branch))
+        for branch in _operands(condition, exp.Or)
+    )
+
+
+def _equates(node: exp.Expr, sources_of: Callable[[exp.Expr], frozenset[str]]) -> bool:
+    if not isinstance(node, exp.EQ):
+        return False
+    left, right = sources_of(node.left), sources_of(node.right)
+    return bool(left) and bool(right) and not left & right
+
+
+def _row_bound(query: exp.Expr) -> int | None:
+    """At most how many rows a CTE or subquery returns, when its shape says: one for an
+    aggregate without GROUP BY or a SELECT without FROM, one per branch for a UNION ALL of
+    those, or its LIMIT."""
+    limit_node = query.args.get("limit")
+    value = limit_node.expression if limit_node is not None else None
+    limit = int(value.this) if isinstance(value, exp.Literal) and value.is_int else None
+    shape: int | None = None
+    if isinstance(query, exp.Select):
+        if query.args.get("from_") is None or (
+            query.args.get("group") is None and _select_aggregated(query)
+        ):
+            shape = 1
+    elif isinstance(query, exp.Union) and not query.args.get("distinct"):
+        left, right = _row_bound(query.left), _row_bound(query.right)
+        if left is not None and right is not None and limit_node is None:
+            shape = left + right
+    bounds = [b for b in (limit, shape) if b is not None]
+    return min(bounds) if bounds else None
+
+
+def _output_columns(
+    alias: str,
+    tables: Mapping[str, TableFacts],
+    derived: Mapping[str, Scope],
+    output_names: Callable[[exp.Expr], list[str]],
+) -> set[str]:
+    if alias in tables:
+        return {column.name.lower() for column in tables[alias].table.columns}
+    return set(output_names(derived[alias].expression))
 
 
 def _sort_key(position: tuple[int | None, int | None]) -> tuple[float, float]:
