@@ -1,0 +1,12 @@
+# Public tables the dry-run benchmark reads, from issue #10. `run.py refresh` snapshots
+# their metadata into catalog.yaml. A name ending in `*` is a wildcard family of shards.
+tables:
+  - bigquery-public-data.google_trends.top_terms              # optional filter, not clustered
+  - bigquery-public-data.wikipedia.pageviews_2025             # required filter, clustered
+  - bigquery-public-data.deps_dev_v1.PackageVersions          # optional filter, clustered
+  - bigquery-public-data.pypi.file_downloads                  # optional filter, clustered, 1.4 PB
+  - bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*   # daily shards
+  - bigquery-public-data.thelook_ecommerce.orders             # not partitioned
+  - bigquery-public-data.thelook_ecommerce.order_items
+  - bigquery-public-data.thelook_ecommerce.users
+  - bigquery-public-data.thelook_ecommerce.events

@@ -314,6 +314,74 @@ def test_union_all_branches() -> None:
 def test_struct_field_reads_top_level_column() -> None:
     facts = facts_for("SELECT e.device.category FROM `proj.analytics.events` e")
     assert table(facts, "e").columns == {"device"}
+    assert table(facts, "e").paths == frozenset({("device", "category")})
+
+
+@pytest.mark.parametrize(
+    ("sql", "paths"),
+    [
+        ("SELECT user_id FROM events", None),  # whole columns only
+        ("SELECT device.category, user_id FROM events", {("device", "category"), ("user_id",)}),
+        ("SELECT device FROM events WHERE device.os = 'x'", {("device",), ("device", "os")}),
+        ("SELECT device.* FROM events", {("device", "category"), ("device", "os")}),
+        ("SELECT p.key FROM events, UNNEST(params) AS p", {("params", "key")}),
+        (
+            "SELECT p.value FROM events AS e CROSS JOIN UNNEST(e.params) AS p WITH OFFSET AS i "
+            "WHERE p.key = 'a' AND i = 0",
+            {("params", "key"), ("params", "value")},
+        ),
+        (
+            "SELECT (SELECT value FROM UNNEST(params) WHERE key = 'a') FROM events",
+            {("params", "key"), ("params", "value")},
+        ),
+        ("SELECT t FROM events, UNNEST(tags) AS t", None),  # an array of scalars
+        ("SELECT ARRAY_LENGTH(params) FROM events", None),
+        ("SELECT COUNT(*) FROM events, UNNEST(params)", None),
+        ("SELECT TO_JSON_STRING(p) FROM events, UNNEST(params) AS p", None),
+        ("WITH b AS (SELECT * FROM events) SELECT device.os FROM b", {("device", "os")}),
+        (
+            "WITH b AS (SELECT device AS d FROM events) SELECT x.d.category FROM b AS x",
+            {("device", "category")},
+        ),
+        ("WITH b AS (SELECT DISTINCT device FROM events) SELECT device.os FROM b", None),
+        (
+            # Grouping reads the whole struct, which covers the field.
+            "WITH b AS (SELECT device AS d FROM events GROUP BY d) SELECT d.os FROM b",
+            {("device",), ("device", "os")},
+        ),
+        (
+            "WITH b AS (SELECT device FROM events UNION ALL SELECT device FROM events) "
+            "SELECT device.os FROM b",
+            {("device", "os")},
+        ),
+        (
+            "WITH b AS (SELECT device FROM events) "
+            "SELECT device.os FROM b UNION ALL SELECT TO_JSON_STRING(device) FROM b",
+            None,  # one reader reads the whole column, so the visit both share does
+        ),
+        (
+            # GROUP BY ALL groups by every field of the struct.
+            "WITH b AS (SELECT device AS d, COUNT(*) AS n FROM events GROUP BY ALL) "
+            "SELECT d.os FROM b",
+            None,
+        ),
+        (
+            # `v` isn't read, so BigQuery drops it and `params.value` with it.
+            "WITH x AS (SELECT p.key AS k, p.value AS v FROM events, UNNEST(params) AS p) "
+            "SELECT k FROM x",
+            {("params", "key")},
+        ),
+        (
+            # EXISTS needs no output columns, so only the condition's field is read.
+            "SELECT user_id FROM events "
+            "WHERE EXISTS (SELECT value FROM UNNEST(params) WHERE key = 'a')",
+            {("params", "key"), ("user_id",)},
+        ),
+    ],
+)
+def test_struct_paths(sql: str, paths: set[tuple[str, ...]] | None) -> None:
+    (events,) = [t for t in facts_for(sql).tables if t.table.name == "events"]
+    assert events.paths == paths
 
 
 def test_pipe_syntax() -> None:

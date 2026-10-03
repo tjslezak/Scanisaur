@@ -35,8 +35,6 @@ def select_star_findings(
     query does. ``sampled`` names tables read with TABLESAMPLE, which reads a sample of
     blocks; ``rejected`` means BigQuery would refuse the query, so no amount is given."""
     limit = facts.outer_limit
-    if limit == 0:
-        return []  # LIMIT 0 returns only the schema
     preview = limit is not None and not facts.outer_aggregated
     full_reads: dict[str, list[TableFacts]] = {}
     for table_facts in sorted(facts.tables, key=lambda t: (t.position[0] or 0, t.position[1] or 0)):
@@ -52,14 +50,18 @@ def select_star_findings(
 
 
 def _reads_every_column(facts: TableFacts) -> bool:
-    """True when ``*`` reaches the result, so every column it selects is read. A reader
-    that uses only some of the columns makes BigQuery read only those."""
+    """True when ``*`` reaches the result, so every column it selects is read whole. A
+    reader that uses only some columns, or some fields of a struct, makes BigQuery read
+    only those."""
     table = facts.table
     if not facts.star or table.kind in ("VIEW", "EXTERNAL"):
         return False  # a view reads other tables; an external table bills its files
     names = {column.name.lower() for column in table.columns}
     kept = names - facts.star_except
-    return bool(kept) and kept <= facts.columns
+    whole = facts.columns
+    if facts.paths is not None:
+        whole = frozenset(path[0] for path in facts.paths if len(path) == 1)
+    return bool(kept) and kept <= whole
 
 
 def _finding(

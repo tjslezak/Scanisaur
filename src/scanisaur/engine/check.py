@@ -147,6 +147,10 @@ def _rule_findings(
         return [_unanalyzable(policy, message, "Check those filters by hand.")], None
     except FactsError:
         return [], None  # nothing is read, e.g. CREATE TABLE without a query
+    if facts.outer_limit == 0:
+        # Measured: BigQuery returns only the schema. It reads nothing, and doesn't require
+        # a partition filter even on a table that needs one, so no rule applies.
+        return [], facts
     pruning = pruning_findings(facts)
     star = select_star_findings(
         facts, now, sampled=_sampled(resolution), rejected=_rejected(pruning)

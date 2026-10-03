@@ -97,6 +97,94 @@ class TestBilledOncePerQuery:
         assert billed(sql) == (6 * COLUMN, 6 * COLUMN)  # 3 partitions, 2 columns
 
 
+#: `n` holds 8 GiB. The four leaf fields of `device` and `params` split the other 16 GiB.
+NESTED = Table(
+    "p",
+    "d",
+    "nested",
+    (
+        Column("n", "INT64"),
+        Column("device", "STRUCT<category STRING, os STRING>"),
+        Column("params", "ARRAY<STRUCT<key STRING, value STRING>>"),
+    ),
+    row_count=GB,
+    size_bytes=24 * GB,
+)
+LEAF = 4 * GB
+
+
+class TestStructFields:
+    """Measured on GA4 (#22): BigQuery bills the struct fields a query reads, one by one."""
+
+    @pytest.mark.parametrize(
+        ("sql", "leaves"),
+        [
+            ("SELECT device FROM nested", 2),  # a struct of two fields counts two
+            ("SELECT device.category FROM nested", 1),
+            ("SELECT d.device.category FROM nested AS d WHERE d.device.os = 'x'", 2),
+            ("SELECT device FROM nested WHERE device.os = 'x'", 2),
+            ("SELECT p.key FROM nested, UNNEST(params) AS p", 1),
+            ("SELECT p.key FROM nested, UNNEST(params) AS p WITH OFFSET AS i WHERE i = 0", 1),
+            ("SELECT (SELECT value FROM UNNEST(params) WHERE key = 'a') FROM nested", 2),
+            ("SELECT ARRAY_LENGTH(params) FROM nested", 2),  # a function of the whole array
+            ("SELECT TO_JSON_STRING(p) FROM nested, UNNEST(params) AS p", 2),
+            ("WITH b AS (SELECT * FROM nested) SELECT device.category FROM b", 1),
+            ("WITH b AS (SELECT DISTINCT device FROM nested) SELECT device.os FROM b", 2),
+            (
+                "SELECT device.category FROM nested UNION ALL SELECT device.os FROM nested",
+                2,  # each field once, however many references read it
+            ),
+        ],
+    )
+    def test_fields_read(self, sql: str, leaves: int) -> None:
+        estimate = estimate_of(sql, NESTED)
+        assert (estimate.bytes_low, estimate.bytes_high) == (leaves * LEAF, leaves * LEAF)
+        assert estimate.confidence == "medium"
+
+    def test_nested_struct_fields(self) -> None:
+        deep = Table(
+            "p",
+            "d",
+            "deep",
+            (Column("s", "STRUCT<a STRING, b STRUCT<c STRING, d STRING, e STRING>>"),),
+            row_count=GB,
+            size_bytes=8 * GB,
+        )
+        assert billed("SELECT s.b.c FROM deep", deep) == (2 * GB, 2 * GB)
+        assert billed("SELECT s.b FROM deep", deep) == (6 * GB, 6 * GB)
+        assert billed("SELECT s.a, s.b.e FROM deep", deep) == (4 * GB, 4 * GB)
+
+    def test_fixed_width_fields_of_a_mixed_struct(self) -> None:
+        # `id` and `s.n` hold 8 GiB each; `s.name` is the rest of the table.
+        mixed = Table(
+            "p",
+            "d",
+            "mixed",
+            (Column("id", "INT64"), Column("s", "STRUCT<n INT64, name STRING>")),
+            row_count=GB,
+            size_bytes=116 * GB,
+        )
+        assert estimate_of("SELECT s.n FROM mixed", mixed).bytes_high == 8 * GB
+        assert estimate_of("SELECT s.n FROM mixed", mixed).confidence == "high"
+        assert estimate_of("SELECT s.name FROM mixed", mixed).bytes_high == 100 * GB
+        assert estimate_of("SELECT s FROM mixed", mixed).bytes_high == 108 * GB
+
+    def test_select_star_reads_every_field(self) -> None:
+        assert billed("SELECT * FROM nested", NESTED) == (24 * GB, 24 * GB)
+
+    def test_unknown_field_reads_the_whole_column(self) -> None:
+        json = Table(
+            "p",
+            "d",
+            "j",
+            (Column("doc", "JSON"), Column("s", "STRING")),
+            row_count=GB,
+            size_bytes=8 * GB,
+        )
+        # A path into a JSON value reads the column: it is one leaf.
+        assert billed("SELECT doc.a.b FROM j", json) == (4 * GB, 4 * GB)
+
+
 class TestColumns:
     def test_variable_width_columns_split_the_rest(self) -> None:
         estimate = estimate_of(f"SELECT term FROM trends WHERE {ONE_DAY}")
@@ -174,6 +262,10 @@ class TestColumns:
     def test_unknown_size_gives_no_estimate(self) -> None:
         table = Table("p", "d", "t", (Column("a", "INT64"),))
         assert check("SELECT a FROM t", Catalog((table,), "p", "d")).estimate is None
+
+    def test_limit_zero_reads_nothing(self) -> None:
+        # Measured: `SELECT * FROM top_terms LIMIT 0` processes 0 bytes.
+        assert billed("SELECT * FROM trends LIMIT 0") == (0, 0)
 
     def test_no_tables(self) -> None:
         assert billed("SELECT 1") == (0, 0)
@@ -487,9 +579,34 @@ class TestConstants:
         tree = sqlglot.parse_one(sql, dialect="bigquery")
         assert estimate_module._time_value(tree, NOW.replace(tzinfo=None)) == expected
 
-    def test_width_of_an_unknown_type(self) -> None:
-        assert estimate_module._width("NOT A TYPE") is None
-        assert estimate_module._width("STRUCT<a INT64, b STRING>") is None
+    def test_total_does_not_depend_on_order(self) -> None:
+        # Added left to right, 0.1 + 0.2 + 0.7 is 1.0000000000000002, which would round
+        # 60 MiB up to 61. fsum gives 1.0 in any order.
+        leaves: dict[tuple[str, ...], float] = {("a",): 0.1, ("b",): 0.2, ("c",): 0.7}
+        scanned = estimate_module._scanned({"u": set(leaves)}, {"u": 60 * 2**20}, leaves)
+        assert estimate_module.billed_bytes(scanned) == 60 * 2**20
+
+    @pytest.mark.parametrize(
+        ("type_", "fields"),
+        [
+            ("NOT A TYPE", (((), None),)),
+            ("INT64", (((), 8),)),
+            ("STRING", (((), None),)),
+            (
+                "STRUCT<a INT64, b STRUCT<c BOOL, d STRING>>",
+                ((("a",), 8), (("b", "c"), 1), (("b", "d"), None)),
+            ),
+            # An array holds any number of elements, so every field has a variable width.
+            ("ARRAY<STRUCT<k STRING, v INT64>>", ((("k",), None), (("v",), None))),
+            ("ARRAY<INT64>", (((), None),)),
+            # A field without a name can't be read alone: the struct is one variable field.
+            ("STRUCT<a INT64, STRING>", (((), None),)),
+        ],
+    )
+    def test_fields_of_a_type(
+        self, type_: str, fields: tuple[tuple[tuple[str, ...], int | None], ...]
+    ) -> None:
+        assert estimate_module._fields(type_) == fields
 
     @pytest.mark.parametrize(
         ("where", "high"),
@@ -589,6 +706,7 @@ class TestReviewCases:
     def test_views_and_external_tables_are_not_estimated(self, kind: str) -> None:
         table = Table("p", "d", "v", (Column("a", "INT64"),), kind=kind, size_bytes=0)  # type: ignore[arg-type]
         assert check("SELECT a FROM v", Catalog((table,), "p", "d")).estimate is None
+        assert check("SELECT a FROM v LIMIT 0", Catalog((table,), "p", "d")).estimate is None
 
     def test_rejected_query_has_no_estimate(self) -> None:
         required = Table(
