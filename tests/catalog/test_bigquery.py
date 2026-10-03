@@ -117,7 +117,8 @@ class HistoryRow(NamedTuple):
     started: datetime
     user: str | None
     sql: str
-    bytes_billed: int
+    bytes_billed: int | None
+    error_reason: str | None = None
 
 
 HISTORY = [HistoryRow("j1", datetime(2026, 10, 1, tzinfo=UTC), "a@x", "SELECT 1", 10)]
@@ -137,6 +138,7 @@ class FakeClient:
     """Answers each kind of metadata query with the matching ROWS."""
 
     def __init__(self) -> None:
+        self.history = HISTORY
         self.queries: list[str] = []
         self.locations: list[str] = []
         self.partition_tables: list[str] = []
@@ -191,7 +193,7 @@ class FakeClient:
         elif "KEY_COLUMN_USAGE" in sql:
             rows = ROWS.keys
         elif "JOBS_BY_PROJECT" in sql:
-            return _Job([_Row(row) for row in HISTORY])
+            return _Job([_Row(row) for row in self.history])
         else:
             raise AssertionError(sql)
         return _Job([_Row(row) for row in rows])
@@ -371,3 +373,20 @@ def test_fetch_query_history_denied() -> None:
     client.metadata_denied = True
     with pytest.raises(ConnectorError, match=r"bigquery\.jobs\.listAll"):
         list(_connector(client).fetch_query_history(datetime.now(UTC)))
+
+
+@pytest.mark.parametrize("error_reason", [None, "invalidQuery", "stopped"])
+def test_history_preserves_outcome_and_unknown_billing(
+    monkeypatch: pytest.MonkeyPatch, error_reason: str | None
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(
+        client,
+        "history",
+        [HistoryRow("j2", datetime(2026, 10, 1, tzinfo=UTC), None, "SELECT 1", None, error_reason)],
+    )
+    [run] = _connector(client).fetch_query_history(datetime(2026, 9, 1, tzinfo=UTC))
+    assert run.bytes_billed is None
+    assert run.error_reason == error_reason
+    assert "IFNULL(total_bytes_billed" not in client.queries[-1]
+    assert "error_result.reason" in client.queries[-1]

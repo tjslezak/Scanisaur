@@ -399,6 +399,8 @@ class TestDecisionLog:
 
 
 class _History:
+    name = "bigquery:p:US"
+
     def __init__(self, runs: list[QueryRun]) -> None:
         self.runs = runs
 
@@ -447,3 +449,25 @@ class TestAudit:
         result = runner.invoke(app, ["audit"])
         assert result.exit_code == EXIT_ERROR
         assert "names no warehouse" in result.stderr
+
+
+def test_audit_shows_partial_billing_and_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = datetime.now(UTC)
+    runs = [
+        QueryRun("unknown", started, None, "SELECT * FROM events", None),
+        QueryRun("failed", started, None, "SELECT 1", 2**30, "stopped"),
+    ]
+    monkeypatch.setattr(cli, "CachedSource", lambda config: _Source(config, runs))
+    config = tmp_path / "scanisaur.yaml"
+    config.write_text(f"log: {{path: {tmp_path / 'log'}}}\n", encoding="utf-8")
+    result = runner.invoke(app, ["audit", "--config", str(config)])
+    assert result.exit_code == EXIT_OK, result.output
+    assert "1 queries since" in result.stdout
+    assert "known + unknown (1 queries)" in result.stdout
+    assert "billing totals are incomplete" in result.stdout
+    assert "failed attempts: 1, 1.1 GB billed" in result.stdout
+    result = runner.invoke(app, ["audit", "--config", str(config), "--json"])
+    data = json.loads(result.stdout)
+    assert (data["runs"], data["failed_runs"], data["unknown_billing_runs"]) == (1, 1, 1)

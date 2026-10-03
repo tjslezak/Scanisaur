@@ -243,22 +243,40 @@ def audit_command(
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
     decisions = read(log_directory(settings.log), since - CHECK_WINDOW)
-    report = audit(runs, catalog, decisions, since=since, policy=settings.policy, top=top)
+    report = audit(
+        runs,
+        catalog,
+        decisions,
+        since=since,
+        warehouse=source.connector.name,
+        policy=settings.policy,
+        top=top,
+    )
     typer.echo(report.model_dump_json(indent=2) if as_json else _format_report(report))
 
 
 def _format_report(report: Report) -> str:
     lines = [
         f"{report.runs} queries since {report.since:%Y-%m-%d}, "
-        f"{format_bytes(report.bytes_billed)} billed",
-        f"flagged: {report.flagged_runs} queries, {format_bytes(report.flagged_bytes)} billed",
+        f"{_billing(report.bytes_billed, report.unknown_billing_runs)} billed",
+        f"flagged: {report.flagged_runs} queries, "
+        f"{_billing(report.flagged_bytes, report.flagged_unknown_billing_runs)} billed",
         f"unchecked: {report.unchecked_runs} queries; run after a block: {report.ran_after_block}",
     ]
+    if report.failed_runs:
+        lines.append(
+            f"failed attempts: {report.failed_runs}, "
+            f"{_billing(report.failed_bytes, report.failed_unknown_billing_runs)} billed; "
+            f"attempted after a block: {report.failed_after_block}"
+        )
+    if report.unknown_billing_runs:
+        lines.append("billing totals are incomplete; entries with unknown billing are listed first")
     if report.flagged:
         lines.append("\nflagged queries, most billed first:")
         for shape in report.flagged:
             lines.append(
-                f"  {format_bytes(shape.bytes_billed):>9}  {shape.runs:>5} runs  "
+                f"  {_billing(shape.bytes_billed, shape.unknown_billing_runs):>9}  "
+                f"{shape.runs:>5} runs  "
                 f"{shape.verdict.value:<5}  {', '.join(shape.rules)}"
             )
             lines.append(f"  {'':>9}  {_clipped(shape.sql)}")
@@ -270,8 +288,17 @@ def _format_report(report: Report) -> str:
 def _totals_section(title: str, totals: tuple[Total, ...]) -> list[str]:
     if not totals:
         return []
-    rows = [f"  {format_bytes(t.bytes_billed):>9}  {t.runs:>5} runs  {t.name}" for t in totals]
+    rows = [
+        f"  {_billing(t.bytes_billed, t.unknown_billing_runs):>9}  {t.runs:>5} runs  {t.name}"
+        for t in totals
+    ]
     return [f"\n{title}, by bytes billed:", *rows]
+
+
+def _billing(known_bytes: int, unknown_runs: int) -> str:
+    if unknown_runs:
+        return f"{format_bytes(known_bytes)} known + unknown ({unknown_runs} queries)"
+    return format_bytes(known_bytes)
 
 
 def _clipped(sql: str, width: int = 100) -> str:

@@ -380,7 +380,7 @@ class BigQueryConnector:
         location = self._warehouse.location
         sql = f"""
             SELECT job_id, creation_time AS started, user_email AS user, query AS sql,
-                   IFNULL(total_bytes_billed, 0) AS bytes_billed
+                   total_bytes_billed AS bytes_billed, error_result.reason AS error_reason
             FROM {self._region("JOBS_BY_PROJECT", location)}
             WHERE creation_time >= @since AND job_type = 'QUERY'
               AND statement_type = 'SELECT' AND state = 'DONE'
@@ -398,7 +398,14 @@ class BigQueryConnector:
                 "from roles/bigquery.resourceViewer"
             ) from error
         return (
-            QueryRun(row["job_id"], row["started"], row["user"], row["sql"], row["bytes_billed"])
+            QueryRun(
+                row["job_id"],
+                row["started"],
+                row["user"],
+                row["sql"],
+                row["bytes_billed"],
+                row["error_reason"],
+            )
             for row in rows
         )
 

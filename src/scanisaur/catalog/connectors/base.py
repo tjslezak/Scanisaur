@@ -33,7 +33,10 @@ class QueryRun:
     #: The account that ran it, when history says.
     user: str | None
     sql: str
-    bytes_billed: int
+    #: None when BigQuery hides billing, for example for row-level security.
+    bytes_billed: int | None
+    #: BigQuery error reason; None for a successful execution.
+    error_reason: str | None = None
 
 
 class Connector(Protocol):
