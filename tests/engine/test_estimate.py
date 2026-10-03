@@ -607,6 +607,23 @@ class TestConstants:
         tree = sqlglot.parse_one(sql, dialect="bigquery")
         assert estimate_module._time_value(tree, NOW.replace(tzinfo=None)) == expected
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("2026-09-30", datetime(2026, 9, 30)),
+            ("2026-09-30 10:00:00", datetime(2026, 9, 30, 10)),
+            ("2026-09-30T10:00:00", datetime(2026, 9, 30, 10)),
+            ("2026-09-30 10:00:00 UTC", datetime(2026, 9, 30, 10)),
+            ("2026-09-30 10:00:00-07", datetime(2026, 9, 30, 17)),
+            ("2026-09-30 10:00-07", datetime(2026, 9, 30, 17)),
+            ("2026-09-30 10:00:00.5+05", datetime(2026, 9, 30, 5, 0, 0, 500000)),
+            ("2026-09-30 10:00:00+05:30", datetime(2026, 9, 30, 4, 30)),
+        ],
+    )
+    def test_parse_time(self, text: str, expected: datetime | None) -> None:
+        # A plain date's day must not be read as a UTC offset (`-30` in `2026-09-30`).
+        assert estimate_module._parse_time(text) == expected
+
     def test_total_does_not_depend_on_order(self) -> None:
         # Added left to right, 0.1 + 0.2 + 0.7 is 1.0000000000000002, which would round
         # 60 MiB up to 61. fsum gives 1.0 in any order.

@@ -108,6 +108,9 @@ _FLIPPED = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 #: FORMAT_DATE directives that map straight onto strftime.
 _FORMAT = re.compile(r"(?:%[YmdHF]|[^%])*")
 _V = TypeVar("_V", str, datetime)
+#: A UTC offset in hours only, such as the `-07` in `10:00:00-07`. It follows a time, so
+#: the day of a plain date such as `2026-09-30` isn't taken for one.
+_SHORT_OFFSET = re.compile(r"(\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2})$")
 
 
 def estimate(
@@ -945,7 +948,7 @@ def _parse_time(text: str) -> datetime | None:
     text = re.sub(r"^(\d{4}-\d{2}-\d{2})[Tt]", r"\1 ", text.strip())
     if text.upper().endswith(" UTC"):
         text = text[:-4]
-    text = re.sub(r"([+-]\d{2})$", r"\1:00", text)
+    text = _SHORT_OFFSET.sub(r"\1:00", text)
     try:
         value = datetime.fromisoformat(text)
         if value.tzinfo is not None:
