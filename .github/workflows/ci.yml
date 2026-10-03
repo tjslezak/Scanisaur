@@ -23,6 +23,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          cache-dependency-glob: uv.lock
       - run: uv sync --locked
       - run: uv run ruff check
       - run: uv run ruff format --check
@@ -36,16 +37,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Every supported Python on Linux; macOS only on the oldest and newest
+        # stable ones. 3.15 has no pydantic-core wheels yet, so it builds from
+        # source on a cache miss; keep it off macOS until the wheels exist.
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          - os: macos-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.14"
+          # Coverage is measured, and its fail_under gate enforced, once.
+          - os: ubuntu-latest
+            python-version: "3.14"
+            coverage: true
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+          # Only a lockfile change should drop the cache (and rebuild 3.15's
+          # pydantic-core), not every pyproject.toml edit.
+          cache-dependency-glob: uv.lock
       - run: uv sync --locked
-      - run: uv run pytest --cov
+      - if: matrix.coverage
+        run: uv run pytest --cov
+      - if: ${{ !matrix.coverage }}
+        run: uv run pytest
 
   build:
     name: Build distributions
