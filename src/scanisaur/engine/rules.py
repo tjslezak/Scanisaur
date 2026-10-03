@@ -12,5 +12,7 @@ PARTITION_FILTER = "SCN003"
 PRUNING_DEFEATED = "SCN004"
 #: SELECT * that reads every column of a large table, LIMIT or not.
 SELECT_STAR = "SCN005"
+#: Sources joined with nothing, or only a non-equality, relating them: every row pairs.
+CROSS_JOIN = "SCN006"
 #: A filter on a later cluster column with none on the leading one, so clustering helps little.
 CLUSTER_PREFIX = "SCN011"

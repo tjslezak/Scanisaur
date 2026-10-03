@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "block",
+  "findings": [
+    {
+      "rule": "SCN006",
+      "severity": "block",
+      "message": "`u` (users), `s` (store_sales) and `d` (daily_sample) are joined with nothing relating them, so every row of each pairs with every row of the others: about 360 quadrillion pairs. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",
+      "fix": "Add the condition that relates them. If every pair is intended, keep one side small, such as a single-row subquery or a short list of dates.",
+      "line": 1,
+      "column": 38
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.web.store_sales",
+    "proj.web.daily_sample"
+  ],
+  "estimate": {
+    "bytes_low": 0,
+    "bytes_high": 0,
+    "confidence": "high",
+    "usd_low": 0.0,
+    "usd_high": 0.0
+  }
+}

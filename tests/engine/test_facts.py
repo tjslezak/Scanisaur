@@ -4,7 +4,14 @@ import pytest
 
 from scanisaur.catalog import Catalog, Column, Partitioning, Table
 from scanisaur.engine import facts as facts_module
-from scanisaur.engine.facts import FactsError, Predicate, QueryFacts, TableFacts, facts_from_sql
+from scanisaur.engine.facts import (
+    DerivedSource,
+    FactsError,
+    Predicate,
+    QueryFacts,
+    TableFacts,
+    facts_from_sql,
+)
 
 
 def columns(**types: str) -> tuple[Column, ...]:
@@ -1058,3 +1065,136 @@ def test_inner_join_on_does_not_filter_an_outer_joined_side_with_is_null() -> No
         "JOIN events_archive a ON a.user_id = e.user_id AND u.signup_date IS NULL"
     )
     assert table(facts, "u").predicates == ()
+
+
+def aliases(facts: QueryFacts) -> list[list[list[str]]]:
+    return [[[member.alias for member in group] for group in p.groups] for p in facts.products]
+
+
+@pytest.mark.parametrize(
+    ("sql", "groups"),
+    [
+        ("SELECT 1 FROM events AS e JOIN users AS u ON u.user_id = e.user_id", []),
+        ("SELECT 1 FROM events AS e, users AS u", [[["e"], ["u"]]]),
+        ("SELECT 1 FROM events AS e JOIN users AS u ON TRUE", [[["e"], ["u"]]]),
+        ("SELECT 1 FROM events AS e JOIN users AS u ON u.country = 'NL'", [[["e"], ["u"]]]),
+        # A later condition connects the first two, as BigQuery reorders joins.
+        (
+            "SELECT 1 FROM events AS e, users AS u, events_archive AS a "
+            "WHERE a.user_id = e.user_id AND a.user_id = u.user_id",
+            [],
+        ),
+        ("SELECT 1 FROM events AS e JOIN users AS u USING (user_id)", []),
+        (
+            "SELECT 1 FROM events AS e "
+            "JOIN users AS u ON e.user_id = u.user_id OR u.country = e.event_name",
+            [],
+        ),
+        # HAVING and QUALIFY run after the join, so they connect nothing.
+        (
+            "SELECT e.user_id FROM events AS e, users AS u "
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY e.user_id ORDER BY u.signup_date) = 1",
+            [[["e"], ["u"]]],
+        ),
+        # A condition on an UNNEST of a source's array connects that source.
+        (
+            "SELECT 1 FROM events AS e, UNNEST(e.params) AS p, users AS u "
+            "WHERE p.value = u.user_id",
+            [],
+        ),
+        ("SELECT 1 FROM events AS e, UNNEST(e.tags) AS t", []),
+        ("SELECT 1 FROM users AS u CROSS JOIN (SELECT MAX(event_date) AS d FROM events)", []),
+        ("SELECT 1 FROM users AS u CROSS JOIN (SELECT CURRENT_DATE() AS d)", []),
+        (
+            "WITH r AS (SELECT user_id FROM events) SELECT 1 FROM r JOIN users AS u ON TRUE",
+            [[["r"], ["u"]]],
+        ),
+        (
+            "SELECT 1 FROM events AS e JOIN users AS u ON u.user_id = e.user_id, plans AS p",
+            [[["e", "u"], ["p"]]],
+        ),
+    ],
+)
+def test_products(sql: str, groups: list[list[list[str]]]) -> None:
+    assert aliases(facts_for(sql)) == groups
+
+
+def test_product_records_the_inequality_and_where_it_starts() -> None:
+    facts = facts_for(
+        "SELECT 1\nFROM events AS e\n"
+        "JOIN plans AS p ON e.event_date BETWEEN p.valid_from AND p.valid_to"
+    )
+    (product,) = facts.products
+    assert product.inequality == "e.event_date BETWEEN p.valid_from AND p.valid_to"
+    assert product.position == (3, 6)
+    # The comparison filters pairs, so it doesn't count as limiting either table.
+    assert product.limited == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("sql", "groups"),
+    [
+        # The ON inside a parenthesized join counts.
+        (
+            "SELECT 1 FROM users AS u JOIN (events AS e JOIN events_archive AS a "
+            "ON a.user_id = e.user_id) ON e.user_id = u.user_id",
+            [],
+        ),
+        # With two sources on one side, BigQuery must pair them first.
+        (
+            "SELECT 1 FROM events AS e, users AS u, events_archive AS a "
+            "WHERE CONCAT(e.user_id, u.country) = a.user_id",
+            [[["e"], ["u"], ["a"]]],
+        ),
+        # An IN list of columns is an OR of equalities.
+        ("SELECT 1 FROM events AS e, users AS u WHERE e.user_id IN (u.user_id, u.country)", []),
+        # An UNNEST of an UNNEST belongs to the first one's owner.
+        (
+            "SELECT 1 FROM events AS e, UNNEST(e.params) AS p, UNNEST(SPLIT(p.value)) AS v, "
+            "users AS u WHERE v = u.user_id",
+            [],
+        ),
+    ],
+)
+def test_more_products(sql: str, groups: list[list[list[str]]]) -> None:
+    assert aliases(facts_for(sql)) == groups
+
+
+def test_correlated_subquery_connects_through_the_outer_row() -> None:
+    facts = facts_for(
+        "SELECT u.user_id, (SELECT COUNT(*) FROM events AS e, events_archive AS a "
+        "WHERE e.user_id = u.user_id AND a.user_id = u.user_id) AS n FROM users AS u"
+    )
+    assert facts.products == ()
+
+
+def test_inequality_is_the_one_between_groups() -> None:
+    facts = facts_for(
+        "SELECT 1 FROM users AS u JOIN events AS e ON e.user_id = u.user_id "
+        "AND e.event_date < u.signup_date JOIN plans AS p ON p.valid_from > u.signup_date"
+    )
+    (product,) = facts.products
+    assert product.inequality == "p.valid_from > u.signup_date"
+
+
+def test_product_records_limits_unnest_and_early_limit() -> None:
+    sql = (
+        "SELECT 1 FROM events AS e, UNNEST(e.tags) AS t, users AS u "
+        "WHERE EXISTS (SELECT 1 FROM plans AS p WHERE p.plan_id = u.country) LIMIT 10"
+    )
+    (product,) = facts_for(sql).products
+    assert product.limited == frozenset({"u"})
+    assert product.flattened == frozenset({"e"})
+    assert product.limit == 10
+    ordered = facts_for("SELECT 1 FROM events AS e, users AS u ORDER BY e.event_ts LIMIT 10")
+    assert ordered.products[0].limit is None  # sorting needs every pair first
+
+
+def test_derived_source_bounds() -> None:
+    facts = facts_for(
+        "SELECT 1 FROM users AS u, (SELECT user_id FROM events LIMIT 5) AS a, "
+        "(SELECT 'x' AS k UNION ALL SELECT 'y') AS b"
+    )
+    (product,) = facts.products
+    derived = {m.alias: m.rows for g in product.groups for m in g if isinstance(m, DerivedSource)}
+    assert derived == {"a": 5, "b": 2}
