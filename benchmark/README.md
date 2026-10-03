@@ -31,3 +31,26 @@ uv run python benchmark/run.py report --write
 `refresh` rewrites `catalog.yaml` and `dry_runs.json`, taking the metadata and the dry runs together so they match. It writes both only once every dry run is done, so an interrupted refresh leaves them as they were. The metadata queries read `INFORMATION_SCHEMA` and bill about 10 MB each, under $0.01 in all. The dry runs are free. Every query carries the label `purpose:scanisaur-benchmark`.
 
 `report` reads only the files, so it runs anywhere, including CI. It evaluates `CURRENT_DATE()` at the time the dry runs were taken.
+
+## Audit aggregation
+
+`uv run python -m benchmark.audit --baseline-ref claude/m4-audit-cmd --runs 1000`
+compares the current audit implementation with the corrected implementation on PR #43.
+Both consume fresh synthetic history and decision iterators; the command rejects any
+JSON report difference before printing elapsed time and peak `tracemalloc` memory.
+Fetch the baseline branch first if it is not available locally. After that branch
+changes or merges, use correctness commit `9abdd5c85784132e4dbb61cc8ebc42efd39245b8`
+for the same comparison.
+
+A local Python 3.14.7/macOS run against that commit produced:
+
+| Workload (1,000 jobs) | Baseline seconds | Optimized seconds | Baseline peak bytes | Optimized peak bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Repeated SQL | 3.637 | 2.394 | 5,381,397 | 2,143,649 |
+| Unique literals | 3.563 | 2.472 | 5,515,492 | 2,188,887 |
+
+These are single synthetic samples with tracing enabled, not warehouse I/O timings.
+The workloads include successful and failed jobs, unknown billing, multiple query
+shapes, decisions from other warehouses, and relative-date queries across days.
+The report snapshots in `tests/audit/fixtures/reports.json` were captured from the
+same correctness commit, before the aggregation rewrite.

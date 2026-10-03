@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from scanisaur import __version__, cli
-from scanisaur.catalog.connectors import QueryRun
+from scanisaur.catalog.connectors import ConnectorError, QueryRun
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.catalog.source import Snapshot
 from scanisaur.cli import EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, app
@@ -471,3 +471,20 @@ def test_audit_shows_partial_billing_and_failures(
     result = runner.invoke(app, ["audit", "--config", str(config), "--json"])
     data = json.loads(result.stdout)
     assert (data["runs"], data["failed_runs"], data["unknown_billing_runs"]) == (1, 1, 1)
+
+
+def test_audit_reports_errors_during_history_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def history(self: _History, since: datetime) -> Iterator[QueryRun]:
+        yield QueryRun("j1", since, None, "SELECT 1", 0)
+        raise ConnectorError("history page failed")
+
+    monkeypatch.setattr(_History, "fetch_query_history", history)
+    monkeypatch.setattr(cli, "CachedSource", lambda config: _Source(config, []))
+    config = tmp_path / "scanisaur.yaml"
+    config.write_text(f"log: {{path: {tmp_path / 'log'}}}\n", encoding="utf-8")
+    result = runner.invoke(app, ["audit", "--config", str(config), "--json"])
+    assert result.exit_code == EXIT_ERROR
+    assert "history page failed" in result.stderr
+    assert result.stdout == ""

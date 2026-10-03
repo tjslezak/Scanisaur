@@ -7,10 +7,13 @@ checked when the decision log has a check of the same query in the hour before i
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from collections.abc import Iterable
-from dataclasses import dataclass
+from bisect import bisect_right
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import lru_cache
+from operator import attrgetter
 
 from pydantic import BaseModel, ConfigDict
 
@@ -78,13 +81,23 @@ class Report(BaseModel):
     rules: tuple[Total, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _Run:
-    run: QueryRun
-    result: CheckResult
-    shape: str
-    #: The verdict of the latest logged check before the run, or None when unchecked.
-    logged: Verdict | None
+@dataclass(slots=True)
+class _Counts:
+    runs: int = 0
+    bytes_billed: int = 0
+    unknown_billing_runs: int = 0
+
+    def add(self, run: QueryRun) -> None:
+        self.runs += 1
+        self.bytes_billed += run.bytes_billed or 0
+        self.unknown_billing_runs += run.bytes_billed is None
+
+
+@dataclass(slots=True)
+class _Shape(_Counts):
+    verdict: Verdict = Verdict.WARN
+    rules: set[str] = field(default_factory=set)
+    unchecked_runs: int = 0
 
 
 def audit(
@@ -97,28 +110,56 @@ def audit(
     policy: Policy = DEFAULT_POLICY,
     top: int = 10,
 ) -> Report:
-    """Replay checks over ``runs`` and summarize them, ``top`` lines per list."""
-    attempts = _replay(runs, catalog, policy, _by_query(decisions, warehouse))
-    replayed = [r for r in attempts if r.run.error_reason is None]
-    failed = [r for r in attempts if r.run.error_reason is not None]
-    flagged = [r for r in replayed if r.result.verdict is not Verdict.PASS]
+    """Replay checks over ``runs`` once and summarize them, ``top`` lines per list."""
+    logged = _by_query(decisions, warehouse)
+    # Per-audit, bounded cache: shapes depend on SQL only, verdicts also on run time.
+    cached_shape = lru_cache(maxsize=1024)(shape)
+    successful, failed, flagged = _Counts(), _Counts(), _Counts()
+    unchecked = after_block = failed_after_block = 0
+    shapes: defaultdict[str, _Shape] = defaultdict(_Shape)
+    tables: defaultdict[str, _Counts] = defaultdict(_Counts)
+    rules: defaultdict[str, _Counts] = defaultdict(_Counts)
+    for run in runs:
+        verdict = _logged(logged.get(fingerprint(run.sql), []), run)
+        if run.error_reason is not None:
+            failed.add(run)
+            failed_after_block += verdict is Verdict.BLOCK
+            continue
+        successful.add(run)
+        unchecked += verdict is None
+        after_block += verdict is Verdict.BLOCK
+        result = check(run.sql, catalog, policy=policy, now=run.started)
+        for name in result.tables:
+            tables[name].add(run)
+        if result.verdict is Verdict.PASS:
+            continue
+        flagged.add(run)
+        flagging_rules = _rules(result)
+        for rule in flagging_rules:
+            rules[rule].add(run)
+        group = shapes[cached_shape(run.sql)]
+        group.add(run)
+        group.unchecked_runs += verdict is None
+        group.rules.update(flagging_rules)
+        if result.verdict is Verdict.BLOCK:
+            group.verdict = Verdict.BLOCK
     return Report(
         since=since,
-        runs=len(replayed),
-        bytes_billed=sum(r.run.bytes_billed or 0 for r in replayed),
-        unknown_billing_runs=sum(r.run.bytes_billed is None for r in replayed),
-        failed_runs=len(failed),
-        failed_bytes=sum(r.run.bytes_billed or 0 for r in failed),
-        failed_unknown_billing_runs=sum(r.run.bytes_billed is None for r in failed),
-        failed_after_block=sum(r.logged is Verdict.BLOCK for r in failed),
-        flagged_runs=len(flagged),
-        flagged_bytes=sum(r.run.bytes_billed or 0 for r in flagged),
-        flagged_unknown_billing_runs=sum(r.run.bytes_billed is None for r in flagged),
-        unchecked_runs=sum(r.logged is None for r in replayed),
-        ran_after_block=sum(r.logged is Verdict.BLOCK for r in replayed),
-        flagged=_flagged_shapes(flagged)[:top],
-        tables=_totals((t, r) for r in replayed for t in r.result.tables)[:top],
-        rules=_totals((rule, r) for r in flagged for rule in _rules(r.result))[:top],
+        runs=successful.runs,
+        bytes_billed=successful.bytes_billed,
+        unknown_billing_runs=successful.unknown_billing_runs,
+        failed_runs=failed.runs,
+        failed_bytes=failed.bytes_billed,
+        failed_unknown_billing_runs=failed.unknown_billing_runs,
+        failed_after_block=failed_after_block,
+        flagged_runs=flagged.runs,
+        flagged_bytes=flagged.bytes_billed,
+        flagged_unknown_billing_runs=flagged.unknown_billing_runs,
+        unchecked_runs=unchecked,
+        ran_after_block=after_block,
+        flagged=_flagged_shapes(shapes)[:top],
+        tables=_totals(tables)[:top],
+        rules=_totals(rules)[:top],
     )
 
 
@@ -132,23 +173,13 @@ def _by_query(decisions: Iterable[Decision], warehouse: str) -> dict[str, list[D
     return by_query
 
 
-def _replay(
-    runs: Iterable[QueryRun], catalog: Catalog, policy: Policy, logged: dict[str, list[Decision]]
-) -> list[_Run]:
-    replayed = []
-    for run in runs:
-        query = fingerprint(run.sql)
-        result = check(run.sql, catalog, policy=policy, now=run.started)
-        run_shape = shape(run.sql)
-        replayed.append(_Run(run, result, run_shape, _logged(logged.get(query, []), run)))
-    return replayed
-
-
 def _logged(entries: list[Decision], run: QueryRun) -> Verdict | None:
     """The verdict of the latest check in the window before ``run``."""
     earliest, latest = run.started - CHECK_WINDOW, run.started + CLOCK_SKEW
-    found = [entry for entry in entries if earliest <= entry.time <= latest]
-    return found[-1].verdict if found else None
+    index = bisect_right(entries, latest, key=attrgetter("time")) - 1
+    if index >= 0 and entries[index].time >= earliest:
+        return entries[index].verdict
+    return None
 
 
 def _rules(result: CheckResult) -> list[str]:
@@ -156,42 +187,33 @@ def _rules(result: CheckResult) -> list[str]:
     return sorted({f.rule for f in result.findings if f.severity in flagging})
 
 
-def _flagged_shapes(flagged: list[_Run]) -> tuple[FlaggedShape, ...]:
-    groups: defaultdict[str, list[_Run]] = defaultdict(list)
-    for run in flagged:
-        groups[run.shape].append(run)
+def _flagged_shapes(groups: Mapping[str, _Shape]) -> tuple[FlaggedShape, ...]:
     shapes = [
         FlaggedShape(
             sql=sql,
-            verdict=_worst(run.result.verdict for run in runs),
-            rules=tuple(sorted({rule for run in runs for rule in _rules(run.result)})),
-            runs=len(runs),
-            bytes_billed=sum(run.run.bytes_billed or 0 for run in runs),
-            unknown_billing_runs=sum(run.run.bytes_billed is None for run in runs),
-            unchecked_runs=sum(run.logged is None for run in runs),
+            verdict=group.verdict,
+            rules=tuple(sorted(group.rules)),
+            runs=group.runs,
+            bytes_billed=group.bytes_billed,
+            unknown_billing_runs=group.unknown_billing_runs,
+            unchecked_runs=group.unchecked_runs,
         )
-        for sql, runs in groups.items()
+        for sql, group in groups.items()
     ]
     return tuple(
         sorted(shapes, key=lambda s: (s.unknown_billing_runs == 0, -s.bytes_billed, -s.runs, s.sql))
     )
 
 
-def _worst(verdicts: Iterable[Verdict]) -> Verdict:
-    return Verdict.BLOCK if Verdict.BLOCK in set(verdicts) else Verdict.WARN
-
-
-def _totals(pairs: Iterable[tuple[str, _Run]]) -> tuple[Total, ...]:
-    runs: Counter[str] = Counter()
-    billed: Counter[str] = Counter()
-    unknown: Counter[str] = Counter()
-    for name, run in pairs:
-        runs[name] += 1
-        billed[name] += run.run.bytes_billed or 0
-        unknown[name] += run.run.bytes_billed is None
+def _totals(groups: Mapping[str, _Counts]) -> tuple[Total, ...]:
     totals = [
-        Total(name=n, runs=runs[n], bytes_billed=billed[n], unknown_billing_runs=unknown[n])
-        for n in runs
+        Total(
+            name=name,
+            runs=group.runs,
+            bytes_billed=group.bytes_billed,
+            unknown_billing_runs=group.unknown_billing_runs,
+        )
+        for name, group in groups.items()
     ]
     return tuple(
         sorted(
