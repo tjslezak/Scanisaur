@@ -70,3 +70,12 @@ def test_read_missing_directory(tmp_path: Path) -> None:
 def test_log_directory(tmp_path: Path) -> None:
     assert log_directory(LogSettings(path=tmp_path)) == tmp_path
     assert log_directory(LogSettings()).name == "log"
+
+
+def test_entry_reuses_supplied_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(sql: str) -> str:
+        pytest.fail("the supplied shape should not be recomputed")
+
+    monkeypatch.setattr("scanisaur.audit.log.shape_fingerprint", unexpected)
+    entry = decision(check(SQL, CATALOG), SQL, source="cli", shape_id="s_cached")
+    assert entry.shape == "s_cached"

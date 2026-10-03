@@ -64,6 +64,7 @@ def decision(
     source: Source,
     warehouse: str | None = None,
     raw_sql: bool = False,
+    shape_id: str | None = None,
     now: datetime | None = None,
 ) -> Decision:
     """The log entry for ``result``, the check of ``sql``."""
@@ -71,7 +72,7 @@ def decision(
         time=now or datetime.now(UTC),
         check_id=result.check_id,
         query=fingerprint(sql),
-        shape=shape_fingerprint(sql),
+        shape=shape_id if shape_id is not None else shape_fingerprint(sql),
         source=source,
         warehouse=warehouse,
         verdict=result.verdict,

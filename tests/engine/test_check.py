@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -10,12 +11,14 @@ from scanisaur.engine import check as check_module
 from scanisaur.engine.check import (
     Policy,
     check,
+    check_with_shape,
     fingerprint,
     new_check_id,
     shape,
     shape_fingerprint,
     tag_for,
 )
+from scanisaur.engine.parse import parse
 from scanisaur.engine.resolve import ResolveError
 from scanisaur.engine.result import CheckResult, Finding, Severity, Verdict
 from scanisaur.engine.rules import UNANALYZABLE, UNKNOWN_IDENTIFIER, WRITE_STATEMENT
@@ -384,3 +387,49 @@ def test_shape_never_keeps_a_value(monkeypatch: pytest.MonkeyPatch) -> None:
 )
 def test_shape_fingerprint_normalizes_constants(left: str, right: str) -> None:
     assert shape_fingerprint(left) == shape_fingerprint(right)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT user_id FROM events WHERE event_date = '2026-09-01'",
+        "/* scanisaur:q_x */ SELECT -1, TRUE /* scanisaur:q_y */",
+        "SELECT -1, TRUE FROM users WHERE user_id IN (-1, 2, 3)",
+        "SELECT usr_id FROM users",
+        "SELECT 1; DELETE FROM users",
+        "SELECT 'unterminated",
+        "",
+        "-- no statement",
+        "SELECT " + "(" * 200 + "1" + ")" * 200,
+    ],
+)
+def test_check_with_shape_matches_separate_calls(sql: str) -> None:
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    result, shape_id = check_with_shape(sql, CATALOG, check_id="chk_test", now=now)
+    assert result == check(sql, CATALOG, check_id="chk_test", now=now)
+    assert shape_id == shape_fingerprint(sql)
+
+
+@pytest.mark.parametrize("sql", ["SELECT 1", "SELECT 'unterminated", "-- no statement"])
+def test_check_with_shape_parses_once(sql: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = parse
+    calls: list[str] = []
+
+    def counted(text: str, dialect: str) -> list[exp.Expr]:
+        calls.append(text)
+        return original(text, dialect)
+
+    monkeypatch.setattr(check_module, "parse", counted)
+    check_with_shape(sql, CATALOG)
+    assert calls == [sql]
+
+
+def test_check_with_shape_handles_parser_recursion(monkeypatch: pytest.MonkeyPatch) -> None:
+    def too_deep(sql: str, dialect: str) -> list[exp.Expr]:
+        raise RecursionError
+
+    monkeypatch.setattr(check_module, "parse", too_deep)
+    result, shape_id = check_with_shape("SELECT 1", CATALOG)
+    assert result.verdict is Verdict.WARN
+    assert result.findings[0].rule == "SCN000"
+    assert shape_id == shape_fingerprint("SELECT 2")
