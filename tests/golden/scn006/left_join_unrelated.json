@@ -3,6 +3,14 @@
   "verdict": "warn",
   "findings": [
     {
+      "rule": "SCN009",
+      "severity": "warn",
+      "message": "The query returns every row it reads of `proj.analytics.users`, about 5 million rows, with no `LIMIT` or aggregate: more than anyone reads, and more than fits in an agent's context.",
+      "fix": "Aggregate to get the answer instead of the rows, with `COUNT`, `SUM` or `GROUP BY`, or add a `LIMIT` to look at a sample.",
+      "line": 2,
+      "column": 6
+    },
+    {
       "rule": "SCN006",
       "severity": "warn",
       "message": "`u` (users) and `s` (store_sales) are joined with nothing relating them, so every row of one pairs with every row of the other: up to about 2 trillion pairs, fewer if filters or joins leave fewer rows. Bytes billed don't grow, but compute does, and counts or sums over the result are multiplied.",

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "BigQuery refuses `p.views = '0'`: it doesn't convert between INT64 and STRING to compare them, so the query fails before it reads anything.",
+      "fix": "Write the number without quotes, as `0`.",
+      "line": 2,
+      "column": 39
+    }
+  ],
+  "tables": [
+    "proj.web.pageviews"
+  ],
+  "estimate": {
+    "bytes_low": 0,
+    "bytes_high": 0,
+    "confidence": "high",
+    "usd_low": 0.0,
+    "usd_high": 0.0
+  }
+}

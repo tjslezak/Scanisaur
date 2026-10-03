@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`o.amount = s.score` compares NUMERIC with FLOAT64, so BigQuery converts both sides to FLOAT64. It can't hold every NUMERIC value exactly, so values that differ can match.",
+      "fix": "Compare exact values: `CAST(s.score AS NUMERIC)`.",
+      "line": 2,
+      "column": 27
+    }
+  ],
+  "tables": [
+    "proj.analytics.Orders",
+    "proj.web.scores"
+  ],
+  "estimate": {
+    "bytes_low": 20971520,
+    "bytes_high": 16321085440,
+    "confidence": "low",
+    "usd_low": 0.0001,
+    "usd_high": 0.0928
+  }
+}

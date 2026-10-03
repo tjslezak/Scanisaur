@@ -43,7 +43,7 @@ CATALOG = HERE / "catalog.yaml"
 DRY_RUNS = HERE / "dry_runs.json"
 REPORT = HERE.parent / "docs" / "benchmark.md"
 #: The rules the queries' `expect` lists cover.
-RULES = ("SCN003", "SCN004", "SCN005", "SCN006", "SCN011")
+RULES = ("SCN003", "SCN004", "SCN005", "SCN006", "SCN008", "SCN009", "SCN011")
 #: Findings that mean Scanisaur couldn't check the query, as when the snapshot lacks a column.
 FAILURES = ("SCN000", "SCN001")
 _MIB = 2**20

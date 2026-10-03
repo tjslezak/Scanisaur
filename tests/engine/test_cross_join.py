@@ -212,4 +212,4 @@ class TestFix:
     ],
 )
 def test_count(n: int, words: str) -> None:
-    assert cross_join._count(n) == words
+    assert cross_join.format_count(n) == words

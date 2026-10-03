@@ -293,6 +293,9 @@ def _only_partition_filters(reference: TableFacts) -> bool:
         predicate.column.lower() in keys
         and predicate.op != "other"
         and predicate.constant
+        # A filter that also reads another column, as `DATE_DIFF(day, DATE(ts), DAY) = 0`,
+        # keeps some rows of each partition, not whole partitions.
+        and {column.name.lower() for column in tree.find_all(exp.Column)} <= keys
         and not (table.partitioning is not None and defeats_pruning(tree, table))
         and _whole_partitions(predicate, table)
         for predicate, tree in parsed

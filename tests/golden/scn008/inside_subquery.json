@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "warn",
+  "findings": [
+    {
+      "rule": "SCN008",
+      "severity": "warn",
+      "message": "`e.event_ts <= '2026-09-30'` compares TIMESTAMP `e.event_ts` with a date, which means midnight UTC, so it leaves out the rest of that day.",
+      "fix": "Compare with the next day instead: `e.event_ts < '2026-10-01'`.",
+      "line": 4,
+      "column": 43
+    }
+  ],
+  "tables": [
+    "proj.analytics.users",
+    "proj.analytics.events"
+  ],
+  "estimate": {
+    "bytes_low": 871366656,
+    "bytes_high": 366861090816,
+    "confidence": "low",
+    "usd_low": 0.005,
+    "usd_high": 2.0854
+  }
+}

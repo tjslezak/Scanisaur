@@ -34,6 +34,8 @@ from scanisaur.engine.rules import (
     WRITE_STATEMENT,
 )
 from scanisaur.engine.select_star import select_star_findings
+from scanisaur.engine.type_mismatch import type_mismatch_findings
+from scanisaur.engine.unbounded import unbounded_result_findings
 
 #: Fixes for SQL that can't be analyzed.
 _SEND_ONE = "Send one complete SQL query."
@@ -62,6 +64,9 @@ class Policy:
     #: side's size is known. Slot time grows by about 10 seconds per billion pairs (#23).
     cross_join_warn_pairs: int = 10**8
     cross_join_block_pairs: int = 10**10
+    #: SCN009 warns when a query returns at least this many rows of a table, every row it
+    #: reads, with no LIMIT or aggregate.
+    unbounded_result_rows: int = 10_000
 
 
 DEFAULT_POLICY = Policy()
@@ -134,28 +139,32 @@ def _analyze(sql: str, catalog: Catalog, policy: Policy, now: datetime) -> _Anal
         return [_unanalyzable(policy, message, _BY_HAND)], (), None
     if resolution.findings:
         return list(resolution.findings), resolution.tables, None
-    findings, facts = _rule_findings(resolution, policy, now)
+    findings, facts = _rule_findings(resolution, policy, now, returns_rows=kind == "query")
     return findings, resolution.tables, None if facts is None else (resolution, facts)
 
 
 def _rule_findings(
-    resolution: Resolution, policy: Policy, now: datetime
+    resolution: Resolution, policy: Policy, now: datetime, *, returns_rows: bool
 ) -> tuple[list[Finding], QueryFacts | None]:
-    """Findings from the rules that read per-table facts (SCN003 to SCN006, SCN011), and
-    the facts for the cost estimate."""
+    """Findings from the rules that read the qualified tree (SCN008) or per-table facts
+    (SCN003 to SCN006, SCN009, SCN011), and the facts for the cost estimate.
+    ``returns_rows`` is False for a statement that writes its result to a table."""
     try:
         facts = extract(resolution)
     except TooComplexError as error:
+        mismatches = type_mismatch_findings(resolution)
         if not any(t.partitioning or t.clustering or t.is_wildcard for t in resolution.tables):
-            return [], None  # no rule could apply
+            return _ordered(mismatches), None  # no facts-based rule could apply
         message = f"Partition and cluster filters weren't checked: {error}."
-        return [_unanalyzable(policy, message, "Check those filters by hand.")], None
+        unchecked = _unanalyzable(policy, message, "Check those filters by hand.")
+        return _ordered([unchecked, *mismatches]), None
     except FactsError:
         return [], None  # nothing is read, e.g. CREATE TABLE without a query
     if facts.outer_limit == 0:
         # Measured: BigQuery returns only the schema. It reads nothing, and doesn't require
-        # a partition filter even on a table that needs one, so no rule applies.
-        return [], facts
+        # a partition filter even on a table that needs one, so only a comparison it
+        # refuses to compile still matters.
+        return _ordered(type_mismatch_findings(resolution, rows_read=False)), facts
     pruning = pruning_findings(facts)
     star = select_star_findings(
         facts, now, sampled=_sampled(resolution), rejected=_rejected(pruning)
@@ -167,8 +176,21 @@ def _rule_findings(
         block_pairs=policy.cross_join_block_pairs,
         sampled=_sampled(resolution),
     )
-    findings = sorted([*pruning, *star, *cross], key=lambda f: (f.line or 0, f.column or 0, f.rule))
-    return findings, facts
+    mismatches = type_mismatch_findings(resolution)
+    unbounded: list[Finding] = []
+    if returns_rows and not _rejected(pruning):
+        unbounded = unbounded_result_findings(
+            resolution,
+            facts,
+            now,
+            warn_rows=policy.unbounded_result_rows,
+            sampled=_sampled(resolution),
+        )
+    return _ordered([*pruning, *star, *cross, *mismatches, *unbounded]), facts
+
+
+def _ordered(findings: list[Finding]) -> list[Finding]:
+    return sorted(findings, key=lambda f: (f.line or 0, f.column or 0, f.rule))
 
 
 def _rejected(findings: list[Finding]) -> bool:

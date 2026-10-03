@@ -164,7 +164,7 @@ def resolve(tree: exp.Expr, catalog: Catalog, dialect: str) -> Resolution:
     try:
         qualified = qualify(
             tree,
-            schema=_schema(by_reference),
+            schema=sqlglot_schema(by_reference),
             dialect=dialect,
             validate_qualify_columns=False,
             allow_partial_qualification=True,
@@ -301,7 +301,7 @@ def _complete_name(node: exp.Table, table: Table) -> None:
         node.set("catalog", exp.to_identifier(table.project))
 
 
-def _schema(by_reference: dict[TableKey, Table]) -> dict[str, object]:
+def sqlglot_schema(by_reference: Mapping[TableKey, Table]) -> dict[str, object]:
     """A sqlglot schema for the referenced tables only, keyed by the names as written."""
     schema: dict[str, dict[str, dict[str, dict[str, str]]]] = {}
     for (project, dataset, name), table in by_reference.items():
