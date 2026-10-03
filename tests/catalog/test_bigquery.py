@@ -6,6 +6,7 @@ from typing import Any, NamedTuple
 import pytest
 from google.api_core import exceptions as api_exceptions
 from google.cloud import bigquery
+from google.cloud.bigquery.dataset import DatasetListItem
 from google.cloud.bigquery.table import TableListItem
 
 from scanisaur.catalog import Column, Partition, Partitioning
@@ -137,6 +138,7 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.locations: list[str] = []
         self.partition_tables: list[str] = []
         self.metadata_denied = False
         self.data_readable: set[str] = set()
@@ -145,8 +147,14 @@ class FakeClient:
         granted = list(permissions) if table.dataset_id in self.data_readable else []
         return {"permissions": granted}
 
-    def list_datasets(self, project: str) -> list[Any]:
-        return [bigquery.DatasetReference(project, d) for d in ("analytics", "ga4", "scratch")]
+    def list_datasets(self, project: str) -> list[DatasetListItem]:
+        locations = {"analytics": "EU", "ga4": "US", "scratch": "EU"}
+        return [
+            DatasetListItem(  # type: ignore[no-untyped-call]
+                {"datasetReference": {"projectId": project, "datasetId": d}, "location": loc}
+            )
+            for d, loc in locations.items()
+        ]
 
     def list_tables(self, dataset: str, max_results: int | None = None) -> list[TableListItem]:
         name = dataset.split(".")[1]
@@ -162,8 +170,9 @@ class FakeClient:
             if r.dataset == name
         ]
 
-    def query(self, sql: str, job_config: bigquery.QueryJobConfig) -> Any:
+    def query(self, sql: str, job_config: bigquery.QueryJobConfig, location: str) -> Any:
         self.queries.append(sql)
+        self.locations.append(location)
         rows: Sequence[NamedTuple]
         if self.metadata_denied:
             raise api_exceptions.Forbidden("Access Denied: INFORMATION_SCHEMA")  # type: ignore[no-untyped-call]
@@ -257,6 +266,15 @@ def test_no_alias_is_a_reserved_keyword() -> None:
     }
     assert aliases
     assert not aliases & RESERVED
+
+
+def test_each_location_is_read_in_its_own_jobs() -> None:
+    client = FakeClient()
+    _connector(client).fetch_catalog()
+    assert set(client.locations) == {"EU", "US"}
+    us = [q for q, loc in zip(client.queries, client.locations, strict=True) if loc == "US"]
+    assert any("`region-us`.INFORMATION_SCHEMA.COLUMNS" in q for q in us)
+    assert not any("`analytics`" in q for q in us)
 
 
 def test_no_datasets() -> None:

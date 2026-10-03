@@ -273,18 +273,34 @@ class BigQueryConnector:
 
     def fetch_catalog(self) -> Catalog:
         with _errors():
-            datasets = self._datasets()
-            if not datasets:
-                return Catalog((), default_project=self._warehouse.project)
-            rows = Rows(
-                columns=[r for r in self._columns() if r.dataset in datasets],
-                options=[r for r in self._options() if r.dataset in datasets],
-                listing=list(self._listing(datasets)),
-                sizes=list(self._sizes(datasets)),
-                keys=list(self._declared_keys(datasets)),
-            )
-            rows = replace(rows, partitions=list(self._partitions(rows)))
-        return assemble(self._warehouse.project, rows)
+            by_location: defaultdict[str, list[str]] = defaultdict(list)
+            for dataset, location in self._datasets().items():
+                by_location[location].append(dataset)
+            # A job runs in one location, so each location's datasets are read apart.
+            parts = [self._rows(location, ds) for location, ds in sorted(by_location.items())]
+        return assemble(
+            self._warehouse.project,
+            Rows(
+                columns=[r for part in parts for r in part.columns],
+                options=[r for part in parts for r in part.options],
+                listing=[r for part in parts for r in part.listing],
+                sizes=[r for part in parts for r in part.sizes],
+                keys=[r for part in parts for r in part.keys],
+                partitions=[r for part in parts for r in part.partitions],
+            ),
+        )
+
+    def _rows(self, location: str, datasets: Sequence[str]) -> Rows:
+        """Everything a full fetch reads for ``datasets``, all in ``location``."""
+        wanted = set(datasets)
+        rows = Rows(
+            columns=[r for r in self._columns(location) if r.dataset in wanted],
+            options=[r for r in self._options(location) if r.dataset in wanted],
+            listing=list(self._listing(datasets)),
+            sizes=list(self._sizes(location, datasets)),
+            keys=list(self._declared_keys(location, datasets)),
+        )
+        return replace(rows, partitions=list(self._partitions(location, rows)))
 
     def fetch_table(self, project: str, dataset: str, name: str) -> Table | None:
         if project != self._warehouse.project or not self._included(dataset):
@@ -313,7 +329,9 @@ class BigQueryConnector:
         ]
         try:
             with _errors():
-                list(self._query(f"SELECT 1 FROM {self._region('COLUMNS')} LIMIT 1"))
+                location = self._warehouse.location
+                sql = f"SELECT 1 FROM {self._region('COLUMNS', location)} LIMIT 1"
+                list(self._query(sql, location=location))
             probes.append(
                 Probe("metadata", "ok", "can read the project-wide INFORMATION_SCHEMA views")
             )
@@ -387,37 +405,43 @@ class BigQueryConnector:
         w = self._warehouse
         return included(dataset, w.include_datasets, w.exclude_datasets)
 
-    def _datasets(self) -> list[str]:
+    def _datasets(self) -> dict[str, str]:
+        """Each included dataset's location, by name."""
         listed = self.client.list_datasets(self._warehouse.project)
-        return sorted(d.dataset_id for d in listed if self._included(d.dataset_id))
+        # datasets.list returns each location; DatasetListItem has no property for it.
+        return {
+            d.dataset_id: d._properties.get("location") or self._warehouse.location
+            for d in sorted(listed, key=lambda d: d.dataset_id)
+            if self._included(d.dataset_id)
+        }
 
-    def _region(self, view: str) -> str:
-        w = self._warehouse
-        return f"`{w.project}`.`region-{w.location.lower()}`.INFORMATION_SCHEMA.{view}"
+    def _region(self, view: str, location: str) -> str:
+        project = self._warehouse.project
+        return f"`{project}`.`region-{location.lower()}`.INFORMATION_SCHEMA.{view}"
 
-    def _columns(self) -> Iterator[ColumnRow]:
+    def _columns(self, location: str) -> Iterator[ColumnRow]:
         sql = f"""
             SELECT c.table_schema AS dataset, c.table_name AS table, c.column_name AS column,
                    c.data_type AS type, IFNULL(p.description, '') AS description,
                    c.is_partitioning_column = 'YES' AS partitioning,
                    c.clustering_ordinal_position AS cluster_position
-            FROM {self._region("COLUMNS")} AS c
-            LEFT JOIN {self._region("COLUMN_FIELD_PATHS")} AS p
+            FROM {self._region("COLUMNS", location)} AS c
+            LEFT JOIN {self._region("COLUMN_FIELD_PATHS", location)} AS p
               ON p.table_schema = c.table_schema AND p.table_name = c.table_name
              AND p.field_path = c.column_name
             WHERE c.is_hidden = 'NO'
             ORDER BY c.table_schema, c.table_name, c.ordinal_position
         """
-        return (_row(ColumnRow, row) for row in self._query(sql))
+        return (_row(ColumnRow, row) for row in self._query(sql, location=location))
 
-    def _options(self) -> Iterator[OptionRow]:
+    def _options(self, location: str) -> Iterator[OptionRow]:
         sql = f"""
             SELECT table_schema AS dataset, table_name AS table, option_name AS name,
                    option_value AS value
-            FROM {self._region("TABLE_OPTIONS")}
+            FROM {self._region("TABLE_OPTIONS", location)}
             WHERE option_name IN ('require_partition_filter', 'description')
         """
-        return (_row(OptionRow, row) for row in self._query(sql))
+        return (_row(OptionRow, row) for row in self._query(sql, location=location))
 
     def _listing(self, datasets: Sequence[str]) -> Iterator[ListingRow]:
         for dataset in datasets:
@@ -430,7 +454,7 @@ class BigQueryConnector:
                     partitioning.type_ if partitioning is not None else None,
                 )
 
-    def _sizes(self, datasets: Sequence[str]) -> Iterator[SizeRow]:
+    def _sizes(self, location: str, datasets: Sequence[str]) -> Iterator[SizeRow]:
         project = self._warehouse.project
         sql = " UNION ALL ".join(
             f"SELECT dataset_id AS dataset, table_id AS table, row_count, size_bytes,"
@@ -438,9 +462,9 @@ class BigQueryConnector:
             f" FROM `{project}`.`{d}`.__TABLES__"
             for d in datasets
         )
-        return (_row(SizeRow, row) for row in self._query(sql))
+        return (_row(SizeRow, row) for row in self._query(sql, location=location))
 
-    def _declared_keys(self, datasets: Sequence[str]) -> Iterator[KeyRow]:
+    def _declared_keys(self, location: str, datasets: Sequence[str]) -> Iterator[KeyRow]:
         project = self._warehouse.project
         sql = " UNION ALL ".join(
             f"""SELECT k.table_schema AS dataset, k.table_name AS table,
@@ -452,9 +476,9 @@ class BigQueryConnector:
                 WHERE t.constraint_type = 'PRIMARY KEY'"""
             for d in datasets
         )
-        return (_row(KeyRow, row) for row in self._query(sql))
+        return (_row(KeyRow, row) for row in self._query(sql, location=location))
 
-    def _partitions(self, rows: Rows) -> Iterator[PartitionRow]:
+    def _partitions(self, location: str, rows: Rows) -> Iterator[PartitionRow]:
         partitioned = {(r.dataset, r.table) for r in rows.columns if r.partitioning} | {
             (r.dataset, r.table) for r in rows.listing if r.granularity is not None
         }
@@ -472,17 +496,21 @@ class BigQueryConnector:
                 WHERE table_name IN UNNEST(@tables) AND total_logical_bytes IS NOT NULL
             """
             parameters = [bigquery.ArrayQueryParameter("tables", "STRING", sorted(tables))]
-            yield from (_row(PartitionRow, row) for row in self._query(sql, parameters))
+            yield from (
+                _row(PartitionRow, row) for row in self._query(sql, parameters, location=location)
+            )
 
     def _query(
         self,
         sql: str,
         parameters: Sequence[bigquery.ArrayQueryParameter | bigquery.ScalarQueryParameter] = (),
+        *,
+        location: str,
     ) -> Iterator[Any]:
         config = bigquery.QueryJobConfig(
             query_parameters=list(parameters), labels={"tool": "scanisaur"}
         )
-        return iter(self.client.query(sql, job_config=config).result())
+        return iter(self.client.query(sql, job_config=config, location=location).result())
 
 
 _R = TypeVar("_R", ColumnRow, OptionRow, SizeRow, KeyRow, PartitionRow)

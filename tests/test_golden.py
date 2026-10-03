@@ -36,8 +36,10 @@ def _policy(sql: str) -> Policy:
 def _result(case: Path) -> dict[str, Any]:
     sql = case.read_text(encoding="utf-8")
     result = check(sql, CATALOG, policy=_policy(sql), now=NOW)
-    # The ID and tag differ on every run; everything else must be deterministic.
-    return result.model_dump(mode="json", exclude={"check_id", "tag"})
+    # The ID and tag differ on every run; everything else must be deterministic. Only
+    # the MCP tool sets the snapshot and trims findings.
+    exclude = {"check_id", "tag", "snapshot_id", "omitted_findings"}
+    return result.model_dump(mode="json", exclude=exclude)
 
 
 def test_cases_exist() -> None:

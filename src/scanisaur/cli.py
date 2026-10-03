@@ -3,11 +3,10 @@
 import dataclasses
 import sys
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, TypeVar, assert_never
+from typing import Annotated, assert_never
 
 import typer
 import yaml
@@ -18,18 +17,20 @@ from scanisaur.audit.report import CHECK_WINDOW, Report, Total, audit
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
+from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config, load_config_text
 from scanisaur.engine.check import check
-from scanisaur.engine.pruning import format_bytes
-from scanisaur.engine.result import CheckResult, Estimate, Verdict
+from scanisaur.engine.result import CheckResult, Verdict
 from scanisaur.errors import ScanisaurError
+from scanisaur.hook import main as hook_main
+from scanisaur.hook import policy_file, socket_path
+from scanisaur.tools import describe_estimate
 
 #: Exit codes for ``scanisaur check``. 2 is also what Click uses for usage errors.
 EXIT_OK = 0
 EXIT_BLOCKED = 1
 EXIT_ERROR = 2
 
-_N = TypeVar("_N", int, float)
 
 app = typer.Typer(
     name="scanisaur",
@@ -159,6 +160,52 @@ def _log_check(settings: Config, result: CheckResult, sql: str) -> None:
         append(log_directory(settings.log), entry)
     except OSError as error:
         typer.echo(f"warning: decision log not written: {error}", err=True)
+@app.command("serve")
+def serve_command(
+    catalog: Annotated[
+        Path,
+        typer.Option(
+            "--catalog",
+            "-c",
+            help="Catalog fixture (YAML) to answer from.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory, if there is one.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+) -> None:
+    """Run the MCP server over standard input and output, for an MCP client to start."""
+    try:
+        source = FixtureSource(catalog)
+        policy = _config(config).policy
+    except ScanisaurError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    # Imported here: the MCP SDK takes about a second to import, and only serve needs it.
+    from scanisaur.server import build_server
+
+    hook_socket = socket_path(catalog, policy_file(config))
+    build_server(source, policy, hook_socket).run("stdio")
+
+
+@app.command(
+    "hook",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    add_help_option=False,
+)
+def hook_command(ctx: typer.Context) -> None:
+    """Check the SQL in an agent's tool call, for an agent harness to run before the
+    call. Talks to a running `serve` started with the same --catalog and --config."""
+    # `scanisaur hook` normally starts in scanisaur.__main__, skipping this module's imports.
+    raise typer.Exit(hook_main(ctx.args))
 
 
 @app.command("audit")
@@ -396,8 +443,7 @@ def _age(age: timedelta) -> str:
 
 
 def _config(path: Path | None) -> Config:
-    if path is None and Path(CONFIG_FILE).is_file():
-        path = Path(CONFIG_FILE)
+    path = policy_file(path)
     return Config() if path is None else load_config(path)
 
 
@@ -413,23 +459,6 @@ def _format(result: CheckResult) -> str:
         if finding.fix:
             lines.append(f"  {'':<7} {'':<6}  fix:   {finding.fix}")
     if result.estimate is not None:
-        lines.append(f"estimate: {_estimate(result.estimate)}")
+        lines.append(f"estimate: {describe_estimate(result.estimate)}")
     lines.append(f"tag: {result.tag}")
     return "\n".join(lines)
-
-
-def _estimate(estimate: Estimate) -> str:
-    """For example ``1.6-2.4 GB billed, $0.01-$0.02 (medium confidence)``."""
-    shown = _span(estimate.bytes_low, estimate.bytes_high, format_bytes) + " billed"
-    if estimate.usd_low is not None and estimate.usd_high is not None:
-        shown += ", " + _span(estimate.usd_low, estimate.usd_high, _dollars)
-    return f"{shown} ({estimate.confidence} confidence)"
-
-
-def _span(low: _N, high: _N, show: Callable[[_N], str]) -> str:
-    shown = show(low), show(high)
-    return shown[0] if shown[0] == shown[1] else f"{shown[0]}-{shown[1]}"
-
-
-def _dollars(value: float) -> str:
-    return "<$0.01" if 0 < value < 0.005 else f"${value:.2f}"
