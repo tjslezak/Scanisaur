@@ -59,6 +59,18 @@ class TestDryRunOutput:
         with pytest.raises(run.BqError, match="without a filter"):
             run.bq_dry_run("p", "SELECT 1")
 
+    def test_wrapped_error_is_kept_whole(self) -> None:
+        stderr = (
+            "BigQuery error in query operation: Error processing job 'p:bqjob_r1': Cannot query\n"
+            "over table 'w.pageviews' without a filter over column(s) 'datehour' that\n"
+            "can be used for partition elimination\n"
+        )
+        assert run.error_message(stderr, 1) == (
+            "Cannot query over table 'w.pageviews' without a filter over column(s) 'datehour' "
+            "that can be used for partition elimination"
+        )
+        assert run.error_message("", 2) == "bq exited with 2"
+
 
 ROWS: dict[str, list[dict[str, Any]]] = {
     "__TABLES__ WHERE table_id = 't'": [
@@ -185,6 +197,23 @@ class TestSnapshot:
         assert (runs.bytes, runs.errors) == ({"ok": 5}, {"bad": "Unrecognized name: nope"})
         assert load_catalog(tmp_path / "catalog.yaml").tables[0].name == "t"
 
+        # An interrupted refresh leaves both files as they were.
+        before = {name: (tmp_path / name).read_text() for name in ("catalog.yaml", "dry_runs.json")}
+
+        def interrupted(_project: str, _sql: str) -> int:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(run, "bq_dry_run", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            run.refresh("p")
+        assert {name: (tmp_path / name).read_text() for name in before} == before
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "catalog.yaml",
+            "dry_runs.json",
+            "queries.yaml",
+            "tables.yaml",
+        ]
+
 
 class TestReport:
     CATALOG = """
@@ -221,12 +250,12 @@ tables:
         one_day, rejected, count, missing = self.outcomes(
             tmp_path, {"one-day": 8 * 2**30, "count": 0}, {"all": "Cannot query over table"}
         )
-        assert one_day.billed == 8 * 2**30
+        assert one_day.billed == (8 * 2**30, 8 * 2**30)
         assert (one_day.ratio, one_day.within_3x, one_day.in_range) == (1.0, True, True)
         assert rejected.billed is None
         assert rejected.result.estimate is None
         assert rejected.rules_match  # SCN003 blocks, as expected
-        assert (count.billed, count.ratio) == (0, 1.0)
+        assert (count.billed, count.ratio) == ((0, 0), 1.0)
         assert (missing.error, missing.ratio) == ("not measured", None)
 
     def test_report_text(self, tmp_path: Path) -> None:
@@ -237,7 +266,15 @@ tables:
         assert "| A range | 0 | - | - |" in text
         assert "| `one-day` | 1.1 GB | 8.6 GB (high) | 8.00 ** | none | none |" in text
         assert "| `all` | rejected: rejected | none | - | SCN003 | SCN003 |" in text
-        assert "1 queries that BigQuery rejected have no estimate" in text
+        assert "BigQuery rejected 1 queries. Scanisaur gives 1 of them no estimate" in text
+        assert "Not measured yet, so left out above: `missing`." in text
+
+    def test_rejection_scanisaur_missed(self, tmp_path: Path) -> None:
+        # BigQuery rejected `one-day`, but Scanisaur estimated it: a miss to show.
+        results = self.outcomes(tmp_path, {"count": 0}, {"one-day": "x", "all": "y"})
+        text = run.report(results, run.DryRuns(measured_at=NOW))
+        assert "BigQuery rejected 2 queries. Scanisaur gives 1 of them no estimate" in text
+        assert "It estimated the others anyway: `one-day`." in text
 
     def test_mismatches_are_listed(self, tmp_path: Path) -> None:
         results = self.outcomes(tmp_path, {}, {})
@@ -257,38 +294,27 @@ tables:
 
     def test_billed(self) -> None:
         assert (run.billed(0), run.billed(169), run.billed(11 * 2**20 + 1)) == (
-            0,
-            MIN_BILLED_BYTES,
-            12 * 2**20,
+            (0, 0),
+            (MIN_BILLED_BYTES, MIN_BILLED_BYTES),
+            (12 * 2**20, 12 * 2**20),
         )
-        # Each table read is billed at least 10 MiB.
-        assert run.billed(3_911_816, tables=2) == 2 * MIN_BILLED_BYTES
-        assert run.billed(0, tables=2) == 0
-        assert run.billed(30 * 2**20, tables=2) == 30 * 2**20
+        # With two tables, from all bytes in one (the other read nothing) to both read,
+        # each at least 10 MiB: 14.5 + 0.5 MiB bills 15 + 10.
+        assert run.billed(15 * 2**20, tables=2) == (15 * 2**20, 25 * 2**20)
+        assert run.billed(3_911_816, tables=2) == (MIN_BILLED_BYTES, 2 * MIN_BILLED_BYTES)
+        assert run.billed(0, tables=2) == (0, 0)
 
-    @pytest.mark.parametrize(
-        ("sql", "tables"),
-        [
-            ("SELECT n FROM `o.d.t`", 1),
-            ("SELECT a.n FROM `o.d.t` AS a JOIN `o.d.u` AS b USING (n)", 2),
-            ("SELECT a.n FROM `o.d.t` AS a JOIN `o.d.t` AS b USING (n)", 1),  # a self-join
-            ("WITH t AS (SELECT n FROM `o.d.u`) SELECT n FROM t UNION ALL SELECT n FROM t", 1),
-            ("SELECT COUNT(*) FROM `o.d.events_*` WHERE _TABLE_SUFFIX > '2026'", 1),
-            ("SELECT 1", 1),
-            ("not SQL (", 1),
-        ],
-    )
-    def test_tables_read(self, sql: str, tables: int) -> None:
-        assert run.tables_read(sql) == tables
-
-    def test_minimum_is_per_table(self, tmp_path: Path) -> None:
+    def test_ratio_and_range_use_the_nearest_bill(self, tmp_path: Path) -> None:
         path = tmp_path / "catalog.yaml"
         path.write_text(self.CATALOG + self.SMALL, encoding="utf-8")
         sql = "SELECT a.n FROM `o.d.t` AS a JOIN `o.d.s` AS b USING (n) WHERE a.day = '2026-09-30'"
         query = run.Query("join", sql)
-        runs = run.DryRuns(measured_at=NOW, bytes={"join": 1000})
+        # 4 GiB of `n` plus 4 GiB of `day` in `t`, and `s`'s minimum: the high end of the bill.
+        processed = 8 * 2**30
+        runs = run.DryRuns(measured_at=NOW, bytes={"join": processed})
         (outcome,) = run.outcomes([query], load_catalog(path), runs)
-        assert (outcome.tables, outcome.billed) == (2, 2 * MIN_BILLED_BYTES)
+        assert outcome.billed == (processed, processed + MIN_BILLED_BYTES)
+        assert (outcome.ratio, outcome.in_range) == (1.0, True)
 
     def test_report_command(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         paths = {

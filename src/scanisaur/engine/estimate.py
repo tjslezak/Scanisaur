@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import calendar
 import functools
+import math
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -121,12 +122,14 @@ def estimate(
     price in US dollars; None (capacity pricing) leaves out the dollars. ``sampled`` names
     the tables read with TABLESAMPLE, which bills only the blocks it picks.
     """
-    if facts.outer_limit == 0:  # measured: BigQuery returns the schema and reads nothing
-        free = None if price_per_tib is None else 0.0
-        return Estimate(bytes_low=0, bytes_high=0, confidence="high", usd_low=free, usd_high=free)
     by_table: dict[str, list[TableFacts]] = {}
     for table_facts in facts.tables:
         by_table.setdefault(table_facts.table.qualified_name, []).append(table_facts)
+    if not all(_estimable(references[0].table) for references in by_table.values()):
+        return None
+    if facts.outer_limit == 0:  # measured: BigQuery returns the schema and reads nothing
+        free = None if price_per_tib is None else 0.0
+        return Estimate(bytes_low=0, bytes_high=0, confidence="high", usd_low=free, usd_high=free)
     now = _naive_utc(now)
     low = high = 0
     confidence: Confidence = "high"
@@ -199,12 +202,13 @@ def _table_estimate(
 ) -> tuple[int, int, Confidence] | None:
     """Billed bytes (low, high) and confidence for one table, over all its references."""
     table = references[0].table
-    if table.size_bytes is None or table.kind in ("VIEW", "EXTERNAL"):
+    size = table.size_bytes
+    if size is None or not _estimable(table):
         return None
     layout = _layout(table)
     listed = bool(table.partitions) and (table.partitioning is not None or table.is_wildcard)
     domain = _domain(table, now) if table.partitioning is not None or table.is_wildcard else None
-    units = {p.id: p.size_bytes for p in table.partitions} if listed else {_WHOLE: table.size_bytes}
+    units = {p.id: p.size_bytes for p in table.partitions} if listed else {_WHOLE: size}
     if listed and domain is not None:
         units |= _newer(table, domain)
     high_leaves: dict[str, set[_Leaf]] = {}
@@ -222,11 +226,17 @@ def _table_estimate(
         confidence = min(confidence, *ranks, key=_RANK.__getitem__)
     if not any(units[unit] for unit in high_leaves):
         return 0, 0, confidence  # nothing to read: no columns, or empty partitions
-    low = _billed(_scanned(low_leaves, units, layout.shares))
-    return low, _billed(_scanned(high_leaves, units, layout.shares)), confidence
+    low = billed_bytes(_scanned(low_leaves, units, layout.shares))
+    return low, billed_bytes(_scanned(high_leaves, units, layout.shares)), confidence
 
 
-def _billed(scanned: float) -> int:
+def _estimable(table: Table) -> bool:
+    """False for a table of unknown size, and for views and external tables, which bill
+    differently."""
+    return table.size_bytes is not None and table.kind not in ("VIEW", "EXTERNAL")
+
+
+def billed_bytes(scanned: float) -> int:
     """BigQuery rounds each table's bytes up to a whole MiB, and bills at least 10 MiB."""
     return max(-int(-scanned // _MIB) * _MIB, MIN_BILLED_BYTES)
 
@@ -234,8 +244,11 @@ def _billed(scanned: float) -> int:
 def _scanned(
     leaves: dict[str, set[_Leaf]], units: dict[str, int], shares: dict[_Leaf, float]
 ) -> float:
-    """Each leaf field of each unit counted once, however many references read it."""
-    return sum(units[unit] * sum(shares[leaf] for leaf in read) for unit, read in leaves.items())
+    """Each leaf field of each unit counted once, however many references read it. ``fsum``
+    keeps the total, and so its rounding up to a MiB, the same in any order."""
+    return math.fsum(
+        units[unit] * math.fsum(shares[leaf] for leaf in read) for unit, read in leaves.items()
+    )
 
 
 def _read(
@@ -300,9 +313,9 @@ def _leaves_read(reference: TableFacts, layout: _Layout) -> frozenset[_Leaf]:
 def _layout(table: Table) -> _Layout:
     """Each leaf field's share of the table's bytes, and how well it is known.
 
-    A fixed-width column, or a struct of fixed-width fields, holds each field's width in
-    bytes for every row. The leaf fields of the other columns split the rest equally, so a
-    struct of ten fields gets ten times a STRING's share. When fixed-width fields would
+    A fixed-width field, whether a column or a struct field outside an array, holds its
+    width in bytes for every row. The variable-width fields split the rest equally, so a
+    struct of ten STRINGs gets ten times a STRING's share. When fixed-width fields would
     fill the table (NULLs take no space), the split can't be known, so every field gets an
     equal share.
     """
@@ -313,10 +326,8 @@ def _layout(table: Table) -> _Layout:
     for column in table.columns:
         name = column.name.lower()
         fields = _fields(column.type)
-        varies = any(width is None for _path, width in fields)
         leaves[name] = tuple((name, *path) for path, _width in fields)
-        for leaf, (_path, width) in zip(leaves[name], fields, strict=True):
-            widths[leaf] = None if varies else width
+        widths.update(zip(leaves[name], (width for _path, width in fields), strict=True))
     fixed = (
         {leaf: rows * w for leaf, w in widths.items() if w is not None} if rows is not None else {}
     )
@@ -362,10 +373,13 @@ def _leaf_fields(
         kinds = [
             (field_.name.lower(), kind)
             for field_ in data_type.expressions
-            if isinstance(kind := field_.args.get("kind"), exp.DataType)
+            if isinstance(field_, exp.ColumnDef)
+            and isinstance(kind := field_.args.get("kind"), exp.DataType)
         ]
-        if not kinds:
+        if not kinds or len(kinds) != len(data_type.expressions):
+            # A field without a name, as in STRUCT<INT64, STRING>, can't be read on its own.
             yield (), None
+            return
         for name, kind in kinds:
             for path, width in _leaf_fields(kind, repeated=repeated):
                 yield (name, *path), width

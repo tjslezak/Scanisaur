@@ -154,6 +154,21 @@ class TestStructFields:
         assert billed("SELECT s.b FROM deep", deep) == (6 * GB, 6 * GB)
         assert billed("SELECT s.a, s.b.e FROM deep", deep) == (4 * GB, 4 * GB)
 
+    def test_fixed_width_fields_of_a_mixed_struct(self) -> None:
+        # `id` and `s.n` hold 8 GiB each; `s.name` is the rest of the table.
+        mixed = Table(
+            "p",
+            "d",
+            "mixed",
+            (Column("id", "INT64"), Column("s", "STRUCT<n INT64, name STRING>")),
+            row_count=GB,
+            size_bytes=116 * GB,
+        )
+        assert estimate_of("SELECT s.n FROM mixed", mixed).bytes_high == 8 * GB
+        assert estimate_of("SELECT s.n FROM mixed", mixed).confidence == "high"
+        assert estimate_of("SELECT s.name FROM mixed", mixed).bytes_high == 100 * GB
+        assert estimate_of("SELECT s FROM mixed", mixed).bytes_high == 108 * GB
+
     def test_select_star_reads_every_field(self) -> None:
         assert billed("SELECT * FROM nested", NESTED) == (24 * GB, 24 * GB)
 
@@ -564,6 +579,13 @@ class TestConstants:
         tree = sqlglot.parse_one(sql, dialect="bigquery")
         assert estimate_module._time_value(tree, NOW.replace(tzinfo=None)) == expected
 
+    def test_total_does_not_depend_on_order(self) -> None:
+        # Added left to right, 0.1 + 0.2 + 0.7 is 1.0000000000000002, which would round
+        # 60 MiB up to 61. fsum gives 1.0 in any order.
+        leaves: dict[tuple[str, ...], float] = {("a",): 0.1, ("b",): 0.2, ("c",): 0.7}
+        scanned = estimate_module._scanned({"u": set(leaves)}, {"u": 60 * 2**20}, leaves)
+        assert estimate_module.billed_bytes(scanned) == 60 * 2**20
+
     @pytest.mark.parametrize(
         ("type_", "fields"),
         [
@@ -577,6 +599,8 @@ class TestConstants:
             # An array holds any number of elements, so every field has a variable width.
             ("ARRAY<STRUCT<k STRING, v INT64>>", ((("k",), None), (("v",), None))),
             ("ARRAY<INT64>", (((), None),)),
+            # A field without a name can't be read alone: the struct is one variable field.
+            ("STRUCT<a INT64, STRING>", (((), None),)),
         ],
     )
     def test_fields_of_a_type(
@@ -682,6 +706,7 @@ class TestReviewCases:
     def test_views_and_external_tables_are_not_estimated(self, kind: str) -> None:
         table = Table("p", "d", "v", (Column("a", "INT64"),), kind=kind, size_bytes=0)  # type: ignore[arg-type]
         assert check("SELECT a FROM v", Catalog((table,), "p", "d")).estimate is None
+        assert check("SELECT a FROM v LIMIT 0", Catalog((table,), "p", "d")).estimate is None
 
     def test_rejected_query_has_no_estimate(self) -> None:
         required = Table(

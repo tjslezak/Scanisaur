@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import sqlglot
 import yaml
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -33,7 +32,7 @@ from sqlglot.errors import SqlglotError
 from scanisaur.catalog.fixtures import load_catalog
 from scanisaur.catalog.model import Catalog
 from scanisaur.engine.check import check
-from scanisaur.engine.estimate import MIN_BILLED_BYTES
+from scanisaur.engine.estimate import MIN_BILLED_BYTES, billed_bytes
 from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Estimate
 
@@ -52,6 +51,8 @@ _MIB = 2**20
 _GRANULARITIES = {4: "YEAR", 6: "MONTH", 8: "DAY", 10: "HOUR"}
 _SPECIAL = ("__NULL__", "__UNPARTITIONED__")
 _LABEL = "--label=purpose:scanisaur-benchmark"
+#: The error of a query in queries.yaml that has no dry run yet.
+NOT_MEASURED = "not measured"
 
 
 class BqError(RuntimeError):
@@ -78,9 +79,8 @@ class DryRuns:
 
 def load_queries(path: Path) -> list[Query]:
     entries = yaml.safe_load(path.read_text(encoding="utf-8"))
-    queries = [
-        Query(e["id"], " ".join(e["sql"].split()), tuple(e.get("expect", ()))) for e in entries
-    ]
+    # The SQL is kept as written: collapsing lines would let a `--` comment swallow the rest.
+    queries = [Query(e["id"], e["sql"].strip(), tuple(e.get("expect", ()))) for e in entries]
     ids = [q.id for q in queries]
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
@@ -103,7 +103,14 @@ def save_dry_runs(runs: DryRuns, path: Path) -> None:
         "bytes": dict(sorted(runs.bytes.items())),
         "errors": dict(sorted(runs.errors.items())),
     }
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _replace(path, json.dumps(data, indent=2) + "\n")
+
+
+def _replace(path: Path, text: str) -> None:
+    """Write ``path`` whole or not at all: an interrupted write leaves the old file."""
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
 
 
 # bq --------------------------------------------------------------------------------------
@@ -113,9 +120,16 @@ def _bq(project: str, args: list[str]) -> str:
     command = ["bq", f"--project_id={project}", "--format=json", "--quiet", *args]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        message = (result.stderr or result.stdout).strip().splitlines()
-        raise BqError(message[-1] if message else f"bq exited with {result.returncode}")
+        raise BqError(error_message(result.stderr or result.stdout, result.returncode))
     return result.stdout
+
+
+def error_message(output: str, returncode: int) -> str:
+    """bq's error without its prefix. bq wraps long messages over several lines."""
+    text = " ".join(line.strip() for line in output.splitlines() if line.strip())
+    text = re.sub(r"^BigQuery error in \w+ operation:\s*", "", text)
+    text = re.sub(r"^Error processing job '[^']*':\s*", "", text)
+    return text or f"bq exited with {returncode}"
 
 
 def bq_rows(project: str, sql: str) -> list[dict[str, Any]]:
@@ -247,14 +261,14 @@ def write_catalog(spec: dict[str, Any], measured_at: datetime, path: Path) -> No
         f"# Metadata snapshot for the dry-run benchmark, taken {measured_at:%Y-%m-%d %H:%M} UTC\n"
         "# by `benchmark/run.py refresh`. Don't edit it by hand.\n"
     )
-    path.write_text(header + yaml.safe_dump(spec, sort_keys=False, width=100), encoding="utf-8")
+    _replace(path, header + yaml.safe_dump(spec, sort_keys=False, width=100))
 
 
 def refresh(project: str) -> None:
     names = yaml.safe_load(TABLES.read_text(encoding="utf-8"))["tables"]
     measured_at = datetime.now(UTC)
     print(f"Reading metadata for {len(names)} tables...", file=sys.stderr)
-    write_catalog(snapshot(project, names), measured_at, CATALOG)
+    spec = snapshot(project, names)
     runs = DryRuns(measured_at=measured_at)
     queries = load_queries(QUERIES)
     for number, query in enumerate(queries, start=1):
@@ -263,6 +277,8 @@ def refresh(project: str) -> None:
             runs.bytes[query.id] = bq_dry_run(project, query.sql)
         except BqError as error:
             runs.errors[query.id] = str(error)
+    # Written only once everything is measured, so the two files always match.
+    write_catalog(spec, measured_at, CATALOG)
     save_dry_runs(runs, DRY_RUNS)
 
 
@@ -273,11 +289,10 @@ def refresh(project: str) -> None:
 class Outcome:
     query: Query
     result: CheckResult
-    #: What BigQuery would bill, from the dry run; None when it rejected the query.
-    billed: int | None
+    #: What BigQuery would bill, from the dry run, as (low, high); None when it rejected
+    #: the query. See ``billed``.
+    billed: tuple[int, int] | None
     error: str | None
-    #: The tables the query reads, each billed at least 10 MiB.
-    tables: int = 1
 
     @property
     def found(self) -> tuple[str, ...]:
@@ -290,13 +305,15 @@ class Outcome:
 
     @property
     def ratio(self) -> float | None:
-        """The estimate's high end over the bill; None when either is missing."""
+        """The estimate's high end over the bill nearest it; None when either is missing."""
         estimate = self.result.estimate
         if estimate is None or self.billed is None:
             return None
-        if self.billed == 0:
+        low, high = self.billed
+        bill = min(max(estimate.bytes_high, low), high)
+        if bill == 0:
             return 1.0 if estimate.bytes_high == 0 else math.inf
-        return estimate.bytes_high / self.billed
+        return estimate.bytes_high / bill
 
     @property
     def within_3x(self) -> bool:
@@ -304,37 +321,23 @@ class Outcome:
 
     @property
     def in_range(self) -> bool:
+        """True when the estimate's range meets the bill's, give or take a MiB."""
         estimate = self.result.estimate
         if estimate is None or self.billed is None:
             return False
-        # Each table's bytes are rounded up to a MiB, which a dry run's total doesn't show.
-        slack = _MIB * self.tables
-        return estimate.bytes_low - slack <= self.billed <= estimate.bytes_high + slack
+        low, high = self.billed
+        return estimate.bytes_low - _MIB <= high and low <= estimate.bytes_high + _MIB
 
 
-def billed(processed: int, tables: int = 1) -> int:
-    """Bytes processed as BigQuery bills them: rounded up to a MiB, with 10 MiB for each
-    table read, unless nothing was read. Measured: a join of two tables that processed
-    3.9 MB billed 20 MiB, and seven shards of a wildcard table billed 10 MiB."""
+def billed(processed: int, tables: int = 1) -> tuple[int, int]:
+    """Bytes processed as BigQuery bills them, as (low, high): each table read is rounded
+    up to a MiB and billed at least 10 MiB (measured), and a table that reads nothing is
+    billed nothing. A dry run gives only the total, so with several tables the bill is a
+    range: from every byte in one table to every table read."""
     if processed == 0:
-        return 0
-    return max(-(-processed // _MIB) * _MIB, MIN_BILLED_BYTES * tables)
-
-
-def tables_read(sql: str) -> int:
-    """How many tables the query names, counting a wildcard family once and CTEs not at
-    all."""
-    try:
-        tree = sqlglot.parse_one(sql, dialect="bigquery")
-    except SqlglotError:
-        return 1
-    ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
-    names = {
-        ".".join(part for part in (table.catalog, table.db, table.name) if part).lower()
-        for table in tree.find_all(exp.Table)
-        if table.db or table.name.lower() not in ctes
-    }
-    return max(len(names), 1)
+        return 0, 0
+    low = billed_bytes(processed)
+    return low, low + (tables - 1) * MIN_BILLED_BYTES
 
 
 def outcomes(queries: list[Query], catalog: Catalog, runs: DryRuns) -> list[Outcome]:
@@ -344,10 +347,9 @@ def outcomes(queries: list[Query], catalog: Catalog, runs: DryRuns) -> list[Outc
         processed = runs.bytes.get(query.id)
         error = runs.errors.get(query.id)
         if processed is None and error is None:
-            error = "not measured"
-        tables = tables_read(query.sql)
-        cost = None if processed is None else billed(processed, tables)
-        results.append(Outcome(query, result, cost, error, tables))
+            error = NOT_MEASURED
+        cost = None if processed is None else billed(processed, max(len(result.tables), 1))
+        results.append(Outcome(query, result, cost, error))
     return results
 
 
@@ -360,7 +362,8 @@ def report(results: list[Outcome], runs: DryRuns) -> str:
         f"{runs.measured_at:%Y-%m-%d} with `benchmark/run.py` ({len(results)} queries on public "
         "tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are "
         "shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table "
-        "read.",
+        "read. A dry run gives only a query's total, so a query reading several tables shows the "
+        "bill as a range when it can't tell how the bytes split between them.",
         "",
         "## Cost estimate",
         "",
@@ -383,14 +386,15 @@ def report(results: list[Outcome], runs: DryRuns) -> str:
         _estimate_row("One value", single),
         _estimate_row("A range", ranges),
     ]
-    rejected = [o for o in results if o.billed is None and o.result.estimate is None]
-    lines += [
-        "",
-        f"{len(rejected)} queries that BigQuery rejected have no estimate, as intended.",
-        "",
-        "## Rules",
-        "",
-    ]
+    rejected = [o for o in results if o.billed is None and o.error != NOT_MEASURED]
+    predicted = [o for o in rejected if o.result.estimate is None]
+    lines += ["", f"BigQuery rejected {len(rejected)} queries."]
+    lines[-1] += f" Scanisaur gives {len(predicted)} of them no estimate, as intended."
+    if missed := [o for o in rejected if o.result.estimate is not None]:
+        lines[-1] += f" It estimated the others anyway: {_ids(missed)}."
+    if unmeasured := [o for o in results if o.error == NOT_MEASURED]:
+        lines += ["", f"Not measured yet, so left out above: {_ids(unmeasured)}."]
+    lines += ["", "## Rules", ""]
     traps = [o for o in results if o.query.expect]
     fixes = [o for o in results if not o.query.expect]
     lines += [
@@ -438,10 +442,15 @@ def _estimate_row(label: str, group: list[Outcome]) -> str:
     )
 
 
+def _ids(outcomes: list[Outcome]) -> str:
+    return ", ".join(f"`{o.query.id}`" for o in outcomes)
+
+
 def _billed(o: Outcome) -> str:
     if o.billed is None:
-        return f"rejected: {o.error}" if o.error and o.error != "not measured" else "not measured"
-    return format_bytes(o.billed)
+        return NOT_MEASURED if o.error == NOT_MEASURED else f"rejected: {o.error}"
+    low, high = (format_bytes(b) for b in o.billed)
+    return low if low == high else f"{low} to {high}"
 
 
 def _estimate(o: Outcome) -> str:

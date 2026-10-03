@@ -1,6 +1,6 @@
 # Dry-run benchmark
 
-Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (62 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read.
+Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026-10-02 with `benchmark/run.py` (62 queries on public tables, issue [#10](https://github.com/tjslezak/Scanisaur/issues/10)). Dry-run bytes are shown as BigQuery bills them: rounded up to a MiB, with at least 10 MiB for each table read. A dry run gives only a query's total, so a query reading several tables shows the bill as a range when it can't tell how the bytes split between them.
 
 ## Cost estimate
 
@@ -16,7 +16,7 @@ Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026
 | One value | 36 | 36 (100%) | 17 (47%) |
 | A range | 23 | 3 (13%) | 22 (96%) |
 
-3 queries that BigQuery rejected have no estimate, as intended.
+BigQuery rejected 3 queries. Scanisaur gives 3 of them no estimate, as intended.
 
 ## Rules
 
@@ -61,33 +61,33 @@ Scanisaur's cost estimates and rules against BigQuery dry runs, measured on 2026
 | `pageviews-by-wiki` | 4.7 GB | 6.7 GB (medium) | 1.44 | none | none |
 | `pageviews-preview` | 10 GB | 10 GB (medium) | 1.00 | SCN005 | SCN005 |
 | `pageviews-extract-date` | 786.4 MB | 10.5 MB to 6.7 GB (medium) | 8.55 ** | none | none |
-| `deps-one-package` | 35.7 MB | 10.5 MB to 9.8 GB (medium) | 275.18 ** | none | none |
-| `deps-no-snapshot-filter` | 7.8 GB | 10.5 MB to 862.9 GB (medium) | 111.02 ** | SCN003 | SCN003 |
-| `deps-name-without-system` | 165.7 MB | 10.5 MB to 5.7 GB (medium) | 34.61 ** | SCN011 | SCN011 |
-| `deps-lower-name` | 308.3 MB | 10.5 MB to 9.8 GB (medium) | 31.82 ** | SCN004 | SCN004 |
+| `deps-one-package` | 35.7 MB | 10.5 MB to 10.1 GB (medium) | 283.21 ** | none | none |
+| `deps-no-snapshot-filter` | 7.8 GB | 10.5 MB to 893.3 GB (medium) | 114.92 ** | SCN003 | SCN003 |
+| `deps-name-without-system` | 165.7 MB | 10.5 MB to 5.9 GB (medium) | 35.48 ** | SCN011 | SCN011 |
+| `deps-lower-name` | 308.3 MB | 10.5 MB to 10.1 GB (medium) | 32.75 ** | SCN004 | SCN004 |
 | `deps-preview` | 57.4 GB | 10.5 MB to 119.7 GB (medium) | 2.09 | SCN005 | SCN005 |
-| `deps-struct-field` | 45.1 MB | 10.5 MB to 14.1 GB (medium) | 312.58 ** | none | none |
-| `pypi-one-day-one-project` | 842 MB | 10.5 MB to 97.1 GB (medium) | 115.37 ** | none | none |
-| `pypi-lower-project` | 98.5 GB | 97.1 GB (medium) | 0.99 | SCN004 | SCN004 |
-| `pypi-no-partition-filter` | 564.9 GB | 10.5 MB to 87.2 TB (medium) | 154.40 ** | SCN003 | SCN003 |
-| `pypi-last-week` | 6 GB | 10.5 MB to 707 GB (medium) | 118.23 ** | none | none |
-| `pypi-first-week-of-month` | 5 GB | 10.5 MB to 572.7 GB (medium) | 115.47 ** | none | none |
-| `pypi-struct-field` | 1.2 GB | 10.5 MB to 156.2 GB (medium) | 128.67 ** | none | none |
+| `deps-struct-field` | 45.1 MB | 10.5 MB to 14.5 GB (medium) | 322.12 ** | none | none |
+| `pypi-one-day-one-project` | 842 MB | 10.5 MB to 100.6 GB (medium) | 119.46 ** | none | none |
+| `pypi-lower-project` | 98.5 GB | 100.6 GB (medium) | 1.02 | SCN004 | SCN004 |
+| `pypi-no-partition-filter` | 564.9 GB | 10.5 MB to 92.3 TB (medium) | 163.40 ** | SCN003 | SCN003 |
+| `pypi-last-week` | 6 GB | 10.5 MB to 732.1 GB (medium) | 122.42 ** | none | none |
+| `pypi-first-week-of-month` | 5 GB | 10.5 MB to 593 GB (medium) | 119.57 ** | none | none |
+| `pypi-struct-field` | 1.2 GB | 10.5 MB to 163.1 GB (medium) | 134.34 ** | none | none |
 | `ga4-first-week` | 10.5 MB | 10.5 MB (medium) | 1.00 | none | none |
-| `ga4-event-date-instead-of-suffix` | 99.6 MB | 77.6 MB (medium) | 0.78 | SCN003 | SCN003 |
-| `ga4-suffix-like` | 22 MB | 15.7 MB (medium) | 0.71 | none | none |
-| `ga4-narrower-wildcard` | 15.7 MB | 10.5 MB (medium) | 0.67 | none | none |
-| `ga4-parse-date-suffix` | 10.5 MB | 10.5 MB to 38.8 MB (low) | 3.70 ** | none | none |
+| `ga4-event-date-instead-of-suffix` | 99.6 MB | 79.7 MB (medium) | 0.80 | SCN003 | SCN003 |
+| `ga4-suffix-like` | 22 MB | 16.8 MB (medium) | 0.76 | none | none |
+| `ga4-narrower-wildcard` | 15.7 MB | 11.5 MB (medium) | 0.73 | none | none |
+| `ga4-parse-date-suffix` | 10.5 MB | 10.5 MB to 39.8 MB (low) | 3.80 ** | none | none |
 | `ga4-preview-one-shard` | 21 MB | 21 MB (medium) | 1.00 | none | none |
 | `ga4-preview-every-shard` | 3.6 GB | 3.6 GB (medium) | 1.00 | SCN003, SCN005 | SCN003, SCN005 |
-| `ga4-struct-field` | 10.5 MB | 10.5 MB (medium) | 1.00 | none | none |
-| `ga4-suffix-not-equal` | 56.6 MB | 38.8 MB (medium) | 0.69 | SCN003 | SCN003 |
+| `ga4-struct-field` | 10.5 MB | 11.5 MB (medium) | 1.10 | none | none |
+| `ga4-suffix-not-equal` | 56.6 MB | 39.8 MB (medium) | 0.70 | SCN003 | SCN003 |
 | `ga4-suffix-from-format-date` | 0 B | 0 B (high) | 1.00 | none | none |
-| `thelook-order-totals` | 21 MB | 21 MB (low) | 1.00 | none | none |
+| `thelook-order-totals` | 10.5 MB to 21 MB | 21 MB (low) | 1.00 | none | none |
 | `thelook-users-preview` | 19.9 MB | 19.9 MB (medium) | 1.00 | none | none |
 | `thelook-events-preview` | 386.9 MB | 386.9 MB (medium) | 1.00 | none | none |
 | `thelook-monthly-average` | 10.5 MB | 10.5 MB (low) | 1.00 | none | none |
-| `thelook-orders-by-country` | 21 MB | 21 MB (low) | 1.00 | none | none |
-| `mix-trending-articles` | 1.5 GB | 54.5 MB to 8.1 GB (medium) | 5.37 ** | none | none |
-| `mix-trends-unfiltered` | 2.6 GB | 1 GB to 9.1 GB (medium) | 3.45 ** | SCN003 | SCN003 |
+| `thelook-orders-by-country` | 10.5 MB to 21 MB | 21 MB (low) | 1.00 | none | none |
+| `mix-trending-articles` | 1.5 GB | 54.5 MB to 8.1 GB (medium) | 5.33 ** | none | none |
+| `mix-trends-unfiltered` | 2.6 GB | 1 GB to 9.1 GB (medium) | 3.44 ** | SCN003 | SCN003 |
 | `mix-pageviews-unfiltered` | rejected: can be used for partition elimination | none | - | SCN003 | SCN003 |

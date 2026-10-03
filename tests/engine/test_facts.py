@@ -359,6 +359,24 @@ def test_struct_field_reads_top_level_column() -> None:
             "SELECT device.os FROM b UNION ALL SELECT TO_JSON_STRING(device) FROM b",
             None,  # one reader reads the whole column, so the visit both share does
         ),
+        (
+            # GROUP BY ALL groups by every field of the struct.
+            "WITH b AS (SELECT device AS d, COUNT(*) AS n FROM events GROUP BY ALL) "
+            "SELECT d.os FROM b",
+            None,
+        ),
+        (
+            # `v` isn't read, so BigQuery drops it and `params.value` with it.
+            "WITH x AS (SELECT p.key AS k, p.value AS v FROM events, UNNEST(params) AS p) "
+            "SELECT k FROM x",
+            {("params", "key")},
+        ),
+        (
+            # EXISTS needs no output columns, so only the condition's field is read.
+            "SELECT user_id FROM events "
+            "WHERE EXISTS (SELECT value FROM UNNEST(params) WHERE key = 'a')",
+            {("params", "key"), ("user_id",)},
+        ),
     ],
 )
 def test_struct_paths(sql: str, paths: set[tuple[str, ...]] | None) -> None:
