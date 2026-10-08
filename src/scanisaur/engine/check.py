@@ -185,6 +185,11 @@ def _check(
     )
 
 
+def _unparsed(policy: Policy, error: SqlParseError) -> Finding:
+    message = f"The SQL could not be parsed: {error.message}."
+    return _unanalyzable(policy, message, "Fix the syntax error.", error.line, error.column)
+
+
 _Analysis = tuple[list[Finding], tuple[Table, ...], tuple[Resolution, QueryFacts] | None]
 
 
@@ -194,13 +199,7 @@ def _analyze(
     if isinstance(statements, RecursionError):
         raise statements
     if isinstance(statements, SqlParseError):
-        error = statements
-        message = f"The SQL could not be parsed: {error.message}."
-        return (
-            [_unanalyzable(policy, message, "Fix the syntax error.", error.line, error.column)],
-            (),
-            None,
-        )
+        return [_unparsed(policy, statements)], (), None
     if not statements:
         return [_unanalyzable(policy, "There is no SQL statement to check.", _SEND_ONE)], (), None
 
