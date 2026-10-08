@@ -112,6 +112,18 @@ def test_shards_become_a_family() -> None:
     assert catalog.find("lonely_*", "ga4") is None  # one shard is not a family
 
 
+class HistoryRow(NamedTuple):
+    job_id: str
+    started: datetime
+    user: str | None
+    sql: str
+    bytes_billed: int | None
+    error_reason: str | None = None
+
+
+HISTORY = [HistoryRow("j1", datetime(2026, 10, 1, tzinfo=UTC), "a@x", "SELECT 1", 10)]
+
+
 class _Row:
     """A query row, read by column name like ``bigquery.Row``."""
 
@@ -126,6 +138,7 @@ class FakeClient:
     """Answers each kind of metadata query with the matching ROWS."""
 
     def __init__(self) -> None:
+        self.history = HISTORY
         self.queries: list[str] = []
         self.locations: list[str] = []
         self.partition_tables: list[str] = []
@@ -179,6 +192,8 @@ class FakeClient:
             rows = ROWS.sizes
         elif "KEY_COLUMN_USAGE" in sql:
             rows = ROWS.keys
+        elif "JOBS_BY_PROJECT" in sql:
+            return _Job([_Row(row) for row in self.history])
         else:
             raise AssertionError(sql)
         return _Job([_Row(row) for row in rows])
@@ -338,3 +353,41 @@ def test_check_access_without_credentials() -> None:
     client.list_datasets = denied  # type: ignore[method-assign]
     [probe] = _connector(client).check_access()
     assert (probe.name, probe.status) == ("credentials", "fail")
+
+
+@pytest.mark.parametrize("location", ["EU", "US", "us-central1"])
+def test_fetch_query_history(location: str) -> None:
+    client = FakeClient()
+    since = datetime(2026, 9, 1, tzinfo=UTC)
+    [run] = _connector(client, location=location).fetch_query_history(since)
+    assert (run.job_id, run.user, run.sql, run.bytes_billed) == ("j1", "a@x", "SELECT 1", 10)
+    assert (
+        f"`proj`.`region-{location.lower()}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT"
+        in client.queries[-1]
+    )
+    assert client.locations == [location]
+    assert "query IS NOT NULL" in client.queries[-1]
+
+
+def test_fetch_query_history_denied() -> None:
+    client = FakeClient()
+    client.metadata_denied = True
+    with pytest.raises(ConnectorError, match=r"bigquery\.jobs\.listAll"):
+        list(_connector(client).fetch_query_history(datetime.now(UTC)))
+
+
+@pytest.mark.parametrize("error_reason", [None, "invalidQuery", "stopped"])
+def test_history_preserves_outcome_and_unknown_billing(
+    monkeypatch: pytest.MonkeyPatch, error_reason: str | None
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(
+        client,
+        "history",
+        [HistoryRow("j2", datetime(2026, 10, 1, tzinfo=UTC), None, "SELECT 1", None, error_reason)],
+    )
+    [run] = _connector(client).fetch_query_history(datetime(2026, 9, 1, tzinfo=UTC))
+    assert run.bytes_billed is None
+    assert run.error_reason == error_reason
+    assert "IFNULL(total_bytes_billed" not in client.queries[-1]
+    assert "error_result.reason" in client.queries[-1]

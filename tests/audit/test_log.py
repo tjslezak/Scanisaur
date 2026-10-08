@@ -63,6 +63,21 @@ def test_read_skips_bad_lines(tmp_path: Path, caplog: pytest.LogCaptureFixture) 
     assert "2026-10.jsonl:3: not a decision log entry" in caplog.text
 
 
+def test_read_skips_naive_times(tmp_path: Path) -> None:
+    append(tmp_path, _entry())
+    line = (tmp_path / "2026-10.jsonl").read_text(encoding="utf-8")
+    naive = json.loads(line) | {"time": "2026-10-03T12:00:00"}
+    with (tmp_path / "2026-10.jsonl").open("a", encoding="utf-8") as file:
+        file.write(json.dumps(naive) + "\n")
+    assert len(list(read(tmp_path, NOW - timedelta(days=1)))) == 1
+
+
+def test_append_rejects_partial_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scanisaur.audit.log.os.write", lambda fd, data: len(data) - 1)
+    with pytest.raises(OSError, match="partly written"):
+        append(tmp_path, _entry())
+
+
 def test_read_missing_directory(tmp_path: Path) -> None:
     assert list(read(tmp_path / "none", NOW)) == []
 
@@ -70,3 +85,12 @@ def test_read_missing_directory(tmp_path: Path) -> None:
 def test_log_directory(tmp_path: Path) -> None:
     assert log_directory(LogSettings(path=tmp_path)) == tmp_path
     assert log_directory(LogSettings()).name == "log"
+
+
+def test_entry_reuses_supplied_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(sql: str) -> str:
+        pytest.fail("the supplied shape should not be recomputed")
+
+    monkeypatch.setattr("scanisaur.audit.log.shape_fingerprint", unexpected)
+    entry = decision(check(SQL, CATALOG), SQL, source="cli", shape_id="s_cached")
+    assert entry.shape == "s_cached"
