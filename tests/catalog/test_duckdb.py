@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -94,3 +95,9 @@ def test_not_a_database(tmp_path: Path) -> None:
 
 def test_name_is_the_resolved_path(database: Path) -> None:
     assert connect(_warehouse(database)).name == f"duckdb:{database.resolve()}"
+
+
+def test_no_query_history(database: Path) -> None:
+    connector = connect(DuckDBWarehouse(type="duckdb", path=database))
+    with pytest.raises(ConnectorError, match="no query history"):
+        connector.fetch_query_history(datetime.now(UTC))

@@ -32,7 +32,7 @@ import google.auth.exceptions
 from google.api_core import exceptions as api_exceptions
 from google.cloud import bigquery
 
-from scanisaur.catalog.connectors.base import ConnectorError, Probe, included
+from scanisaur.catalog.connectors.base import ConnectorError, Probe, QueryRun, included
 from scanisaur.catalog.model import (
     Catalog,
     Column,
@@ -373,6 +373,42 @@ class BigQueryConnector:
             probes.append(Probe("data access", "ok", "can't read table data"))
         return probes
 
+    def fetch_query_history(self, since: datetime) -> Iterator[QueryRun]:
+        """SELECT jobs from ``JOBS_BY_PROJECT``, which needs ``bigquery.jobs.listAll``
+        (roles/bigquery.resourceViewer). The history holds every query's full text,
+        literal values included (docs/spikes/0002-job-history-comments.md)."""
+        location = self._warehouse.location
+        sql = f"""
+            SELECT job_id, creation_time AS started, user_email AS user, query AS sql,
+                   total_bytes_billed AS bytes_billed, error_result.reason AS error_reason
+            FROM {self._region("JOBS_BY_PROJECT", location)}
+            WHERE creation_time >= @since AND job_type = 'QUERY'
+              AND statement_type = 'SELECT' AND state = 'DONE' AND query IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM UNNEST(labels) WHERE key = 'tool'
+                              AND value = 'scanisaur')
+            ORDER BY creation_time
+        """
+        parameters = [bigquery.ScalarQueryParameter("since", "TIMESTAMP", since)]
+        try:
+            with _errors():
+                rows = list(self._query(sql, parameters, location=location))
+        except ConnectorError as error:
+            raise ConnectorError(
+                f"{error}. Reading query history needs bigquery.jobs.listAll on the project, "
+                "from roles/bigquery.resourceViewer"
+            ) from error
+        return (
+            QueryRun(
+                row["job_id"],
+                row["started"],
+                row["user"],
+                row["sql"],
+                row["bytes_billed"],
+                row["error_reason"],
+            )
+            for row in rows
+        )
+
     def _included(self, dataset: str) -> bool:
         w = self._warehouse
         return included(dataset, w.include_datasets, w.exclude_datasets)
@@ -475,7 +511,7 @@ class BigQueryConnector:
     def _query(
         self,
         sql: str,
-        parameters: Sequence[bigquery.ArrayQueryParameter] = (),
+        parameters: Sequence[bigquery.ArrayQueryParameter | bigquery.ScalarQueryParameter] = (),
         *,
         location: str,
     ) -> Iterator[Any]:

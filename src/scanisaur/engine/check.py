@@ -116,11 +116,51 @@ def check(
     now: datetime | None = None,
 ) -> CheckResult:
     """``now`` evaluates ``CURRENT_DATE()`` and the like in the cost estimate."""
+    return _check(sql, catalog, _parse_sql(sql), policy=policy, check_id=check_id, now=now)
+
+
+def check_with_shape(
+    sql: str,
+    catalog: Catalog,
+    *,
+    policy: Policy = DEFAULT_POLICY,
+    check_id: str | None = None,
+    now: datetime | None = None,
+) -> tuple[CheckResult, str]:
+    """Check and fingerprint the query's shape using a single parse.
+
+    Checking copies the tree before resolving names. Shaping consumes the original
+    only after checking, so literals and source positions remain intact during analysis.
+    """
+    statements = _parse_sql(sql)
+    result = _check(sql, catalog, statements, policy=policy, check_id=check_id, now=now)
+    return result, "s_" + _digest(_shape(sql, statements))
+
+
+_ParseResult = list[exp.Expr] | SqlParseError | RecursionError
+
+
+def _parse_sql(sql: str) -> _ParseResult:
+    try:
+        return parse(sql, DIALECT)
+    except (SqlParseError, RecursionError) as error:
+        return error
+
+
+def _check(
+    sql: str,
+    catalog: Catalog,
+    statements: _ParseResult,
+    *,
+    policy: Policy,
+    check_id: str | None,
+    now: datetime | None,
+) -> CheckResult:
     check_id = check_id or new_check_id()
     now = now or datetime.now(UTC)
     cost: Estimate | None = None
     try:
-        findings, tables, analyzed = _analyze(sql, catalog, policy, now)
+        findings, tables, analyzed = _analyze(statements, catalog, policy, now)
         if analyzed is not None and not _rejected(findings) and not _unseen_reads(analyzed[0]):
             resolution, facts = analyzed
             cost = estimate(facts, now, policy.price_per_tib, _sampled(resolution))
@@ -145,19 +185,21 @@ def check(
     )
 
 
+def _unparsed(policy: Policy, error: SqlParseError) -> Finding:
+    message = f"The SQL could not be parsed: {error.message}."
+    return _unanalyzable(policy, message, "Fix the syntax error.", error.line, error.column)
+
+
 _Analysis = tuple[list[Finding], tuple[Table, ...], tuple[Resolution, QueryFacts] | None]
 
 
-def _analyze(sql: str, catalog: Catalog, policy: Policy, now: datetime) -> _Analysis:
-    try:
-        statements = parse(sql, DIALECT)
-    except SqlParseError as error:
-        message = f"The SQL could not be parsed: {error.message}."
-        return (
-            [_unanalyzable(policy, message, "Fix the syntax error.", error.line, error.column)],
-            (),
-            None,
-        )
+def _analyze(
+    statements: _ParseResult, catalog: Catalog, policy: Policy, now: datetime
+) -> _Analysis:
+    if isinstance(statements, RecursionError):
+        raise statements
+    if isinstance(statements, SqlParseError):
+        return [_unparsed(policy, statements)], (), None
     if not statements:
         return [_unanalyzable(policy, "There is no SQL statement to check.", _SEND_ONE)], (), None
 
@@ -345,16 +387,21 @@ def shape(sql: str) -> str:
     A list of constants after ``IN`` becomes one ``?``, whatever its length.
     """
     text = _untagged(sql)
+    return _shape(text, _parse_sql(text))
+
+
+def _shape(sql: str, statements: _ParseResult) -> str:
+    if isinstance(statements, (SqlParseError, RecursionError)):
+        return _rough_shape(_untagged(sql))
     try:
-        statements = parse(text, DIALECT)
         shaped = "; ".join(
-            statement.transform(_placeholder).sql(dialect=DIALECT, comments=False)
+            statement.transform(_placeholder, copy=False).sql(dialect=DIALECT, comments=False)
             for statement in statements
         )
-    except (SqlParseError, RecursionError):
-        return _rough_shape(text)
+    except RecursionError:
+        return _rough_shape(_untagged(sql))
     # A literal kind not in _LITERALS would keep its value: shape by pattern instead.
-    return _rough_shape(text) if _VALUE.search(shaped) else shaped
+    return _rough_shape(_untagged(sql)) if _VALUE.search(shaped) else shaped
 
 
 def shape_fingerprint(sql: str) -> str:
@@ -384,7 +431,6 @@ def _placeholder(node: exp.Expr) -> exp.Expr:
         return exp.Placeholder()
     values = node.expressions if isinstance(node, exp.In) else []
     if values and all(_is_constant(value) for value in values):
-        node = node.copy()
         node.set("expressions", [exp.Placeholder()])
     return node
 

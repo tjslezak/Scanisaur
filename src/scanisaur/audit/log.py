@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 import platformdirs
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
 from scanisaur.config import LogSettings
 from scanisaur.engine.check import fingerprint, shape_fingerprint
@@ -42,7 +42,7 @@ class Decision(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     v: Literal[1] = 1
-    time: datetime
+    time: AwareDatetime
     check_id: str
     #: The query's exact-text fingerprint, as in its tag: matches runs in query history.
     query: str
@@ -64,6 +64,7 @@ def decision(
     source: Source,
     warehouse: str | None = None,
     raw_sql: bool = False,
+    shape_id: str | None = None,
     now: datetime | None = None,
 ) -> Decision:
     """The log entry for ``result``, the check of ``sql``."""
@@ -71,7 +72,7 @@ def decision(
         time=now or datetime.now(UTC),
         check_id=result.check_id,
         query=fingerprint(sql),
-        shape=shape_fingerprint(sql),
+        shape=shape_id if shape_id is not None else shape_fingerprint(sql),
         source=source,
         warehouse=warehouse,
         verdict=result.verdict,
@@ -101,7 +102,8 @@ def append(directory: Path, entry: Decision) -> None:
     data = (entry.model_dump_json(exclude_none=True) + "\n").encode()
     fd = os.open(_month_file(directory, entry.time), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        os.write(fd, data)
+        if os.write(fd, data) != len(data):
+            raise OSError(f"{directory}: decision log line only partly written")
     finally:
         os.close(fd)
 
