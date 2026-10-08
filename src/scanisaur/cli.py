@@ -12,13 +12,16 @@ import typer
 import yaml
 
 from scanisaur import __version__
-from scanisaur.audit.log import append, decision, log_directory
+from scanisaur.audit.log import append, decision, log_directory, read
+from scanisaur.audit.report import CHECK_WINDOW, Report, Total, audit
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
+from scanisaur.catalog.model import Catalog
 from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config, load_config_text
-from scanisaur.engine.check import check
+from scanisaur.engine.check import Policy, check, check_with_shape
+from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Verdict
 from scanisaur.errors import ScanisaurError
 from scanisaur.hook import main as hook_main
@@ -141,20 +144,38 @@ def check_command(
         policy = dataclasses.replace(policy, fail_mode="closed")
     if capacity_pricing:
         policy = dataclasses.replace(policy, price_per_tib=None)
-    result = check(sql, loaded, policy=policy)
-    _log_check(settings, result, sql)
+    result = _checked_and_logged(settings, sql, loaded, policy)
     typer.echo(result.model_dump_json(indent=2) if as_json else _format(result))
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
 
 
-def _log_check(settings: Config, result: CheckResult, sql: str) -> None:
+def _checked_and_logged(
+    settings: Config, sql: str, catalog: Catalog, policy: Policy
+) -> CheckResult:
+    if not settings.log.enabled:
+        return check(sql, catalog, policy=policy)
+    result, shape_id = check_with_shape(sql, catalog, policy=policy)
+    _log_check(settings, result, sql, shape_id=shape_id)
+    return result
+
+
+def _log_check(
+    settings: Config, result: CheckResult, sql: str, *, shape_id: str | None = None
+) -> None:
     """Add the check to the decision log; a log that can't be written only warns."""
     if not settings.log.enabled:
         return
     warehouse = settings.warehouse.name if settings.warehouse else None
-    entry = decision(result, sql, source="cli", warehouse=warehouse, raw_sql=settings.log.raw_sql)
+    entry = decision(
+        result,
+        sql,
+        source="cli",
+        warehouse=warehouse,
+        raw_sql=settings.log.raw_sql,
+        shape_id=shape_id,
+    )
     try:
         append(log_directory(settings.log), entry)
     except OSError as error:
@@ -207,6 +228,95 @@ def hook_command(ctx: typer.Context) -> None:
     call. Talks to a running `serve` started with the same --catalog and --config."""
     # `scanisaur hook` normally starts in scanisaur.__main__, skipping this module's imports.
     raise typer.Exit(hook_main(ctx.args))
+
+
+@app.command("audit")
+def audit_command(
+    days: Annotated[
+        int, typer.Option("--days", min=1, help="How many days of query history to read.")
+    ] = 30,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help=f"Policy file. Default: {CONFIG_FILE} in the working directory.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+    top: Annotated[int, typer.Option("--top", min=1, help="Lines per list.")] = 10,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+) -> None:
+    """Replay checks over the warehouse's query history and report what they flag.
+
+    Needs bigquery.jobs.listAll (roles/bigquery.resourceViewer), which also exposes the
+    full text of every query in the project. Nothing is written to the decision log.
+    """
+    since = datetime.now(UTC) - timedelta(days=days)
+    try:
+        settings = _config(config)
+        source = CachedSource(settings)
+        runs = list(source.connector.fetch_query_history(since))
+        catalog = source.current().catalog
+    except ScanisaurError as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(EXIT_ERROR) from error
+    decisions = read(log_directory(settings.log), since - CHECK_WINDOW)
+    warehouse = source.connector.name
+    report = audit(
+        runs, catalog, decisions, since=since, warehouse=warehouse, policy=settings.policy, top=top
+    )
+    typer.echo(report.model_dump_json(indent=2) if as_json else _format_report(report))
+
+
+def _format_report(report: Report) -> str:
+    lines = [
+        f"{report.runs} queries since {report.since:%Y-%m-%d}, "
+        f"{_billing(report.bytes_billed, report.unknown_billing_runs)} billed",
+        f"flagged: {report.flagged_runs} queries, "
+        f"{_billing(report.flagged_bytes, report.flagged_unknown_billing_runs)} billed",
+        f"unchecked: {report.unchecked_runs} queries; run after a block: {report.ran_after_block}",
+    ]
+    if report.failed_runs:
+        lines.append(
+            f"failed attempts: {report.failed_runs}, "
+            f"{_billing(report.failed_bytes, report.failed_unknown_billing_runs)} billed; "
+            f"attempted after a block: {report.failed_after_block}"
+        )
+    if report.unknown_billing_runs:
+        lines.append("billing totals are incomplete; entries with unknown billing are listed first")
+    if report.flagged:
+        lines.append("\nflagged queries, most billed first:")
+        for shape in report.flagged:
+            lines.append(
+                f"  {_billing(shape.bytes_billed, shape.unknown_billing_runs):>9}  "
+                f"{shape.runs:>5} runs  "
+                f"{shape.verdict.value:<5}  {', '.join(shape.rules)}"
+            )
+            lines.append(f"  {'':>9}  {_clipped(shape.sql)}")
+    lines += _totals_section("top tables", report.tables)
+    lines += _totals_section("top rules", report.rules)
+    return "\n".join(lines)
+
+
+def _totals_section(title: str, totals: tuple[Total, ...]) -> list[str]:
+    if not totals:
+        return []
+    rows = [
+        f"  {_billing(t.bytes_billed, t.unknown_billing_runs):>9}  {t.runs:>5} runs  {t.name}"
+        for t in totals
+    ]
+    return [f"\n{title}, by bytes billed:", *rows]
+
+
+def _billing(known_bytes: int, unknown_runs: int) -> str:
+    if unknown_runs:
+        return f"{format_bytes(known_bytes)} known + unknown ({unknown_runs} queries)"
+    return format_bytes(known_bytes)
+
+
+def _clipped(sql: str, width: int = 100) -> str:
+    return sql if len(sql) <= width else sql[: width - 3] + "..."
 
 
 @app.command("refresh")
