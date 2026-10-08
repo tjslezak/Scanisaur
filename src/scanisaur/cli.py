@@ -17,9 +17,10 @@ from scanisaur.audit.report import CHECK_WINDOW, Report, Total, audit
 from scanisaur.catalog.cached import CachedSource
 from scanisaur.catalog.connectors import Probe
 from scanisaur.catalog.fixtures import load_catalog
+from scanisaur.catalog.model import Catalog
 from scanisaur.catalog.source import FixtureSource
 from scanisaur.config import CONFIG_FILE, Config, ConfigError, load_config, load_config_text
-from scanisaur.engine.check import check, check_with_shape
+from scanisaur.engine.check import Policy, check, check_with_shape
 from scanisaur.engine.pruning import format_bytes
 from scanisaur.engine.result import CheckResult, Verdict
 from scanisaur.errors import ScanisaurError
@@ -143,16 +144,21 @@ def check_command(
         policy = dataclasses.replace(policy, fail_mode="closed")
     if capacity_pricing:
         policy = dataclasses.replace(policy, price_per_tib=None)
-    shape_id = None
-    if settings.log.enabled:
-        result, shape_id = check_with_shape(sql, loaded, policy=policy)
-    else:
-        result = check(sql, loaded, policy=policy)
-    _log_check(settings, result, sql, shape_id=shape_id)
+    result = _checked_and_logged(settings, sql, loaded, policy)
     typer.echo(result.model_dump_json(indent=2) if as_json else _format(result))
 
     failing = {Verdict.BLOCK, Verdict.WARN} if strict else {Verdict.BLOCK}
     raise typer.Exit(EXIT_BLOCKED if result.verdict in failing else EXIT_OK)
+
+
+def _checked_and_logged(
+    settings: Config, sql: str, catalog: Catalog, policy: Policy
+) -> CheckResult:
+    if not settings.log.enabled:
+        return check(sql, catalog, policy=policy)
+    result, shape_id = check_with_shape(sql, catalog, policy=policy)
+    _log_check(settings, result, sql, shape_id=shape_id)
+    return result
 
 
 def _log_check(
@@ -256,14 +262,9 @@ def audit_command(
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(EXIT_ERROR) from error
     decisions = read(log_directory(settings.log), since - CHECK_WINDOW)
+    warehouse = source.connector.name
     report = audit(
-        runs,
-        catalog,
-        decisions,
-        since=since,
-        warehouse=source.connector.name,
-        policy=settings.policy,
-        top=top,
+        runs, catalog, decisions, since=since, warehouse=warehouse, policy=settings.policy, top=top
     )
     typer.echo(report.model_dump_json(indent=2) if as_json else _format_report(report))
 
