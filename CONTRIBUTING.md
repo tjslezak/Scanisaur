@@ -20,13 +20,11 @@ uv run pre-commit install
 CI runs these on every pull request; run them locally first:
 
 ```bash
-uv run ruff check
-uv run ruff format --check
-uv run mypy
+uv run pre-commit run --all-files
 uv run pytest --cov
 ```
 
-`pre-commit` runs ruff, mypy and a private-key check on each commit.
+`pre-commit` runs ruff, mypy, a Markdown linter (pymarkdown) and a few file checks on each commit, including a private-key check. CI runs the same hooks.
 
 ## Credentials
 

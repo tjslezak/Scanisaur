@@ -8,7 +8,7 @@ repos:
       - id: detect-private-key
       - id: end-of-file-fixer
       - id: trailing-whitespace
-  # ruff and mypy run from the project environment, so uv.lock is the only place
+  # ruff, mypy and pymarkdown run from the project environment, so uv.lock is the only place
   # their versions are pinned and pre-commit always matches CI.
   - repo: local
     hooks:
@@ -28,3 +28,8 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: pymarkdown
+        name: pymarkdown
+        entry: uv run pymarkdown scan
+        language: system
+        types: [markdown]
