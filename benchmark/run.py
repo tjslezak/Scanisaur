@@ -492,7 +492,7 @@ def _ratio(o: Outcome) -> str:
         return "-"
     if math.isinf(ratio):
         return "inf"
-    return f"{ratio:.2f}" + ("" if o.within_3x else " **")
+    return f"{ratio:.2f}" + ("" if o.within_3x else r" \*\*")
 
 
 def _rules(rules: tuple[str, ...]) -> str:

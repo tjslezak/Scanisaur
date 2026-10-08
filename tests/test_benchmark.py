@@ -272,7 +272,7 @@ tables:
         assert "| **All** | 2 | 1 (50%) | 1 (50%) |" in text  # one-day is 8x over, count exact
         assert "| One value | 2 | 1 (50%) | 1 (50%) |" in text
         assert "| A range | 0 | - | - |" in text
-        assert "| `one-day` | 1.1 GB | 8.6 GB (high) | 8.00 ** | none | none |" in text
+        assert "| `one-day` | 1.1 GB | 8.6 GB (high) | 8.00 \\*\\* | none | none |" in text
         assert "| `all` | rejected: rejected | none | - | SCN003 | SCN003 |" in text
         assert "BigQuery rejected 1 queries. Scanisaur gives 1 of them no estimate" in text
         assert "Not measured yet, so left out above: `missing`." in text

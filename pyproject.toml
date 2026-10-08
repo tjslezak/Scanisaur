@@ -55,6 +55,7 @@ dev = [
   "google-cloud-bigquery>=3.46.1",
   "mypy>=2.3",
   "pre-commit>=4.6",
+  "pymarkdownlnt>=0.9.40",
   "pytest>=9.1",
   "pytest-cov>=7.1",
   "ruff>=0.16",
@@ -71,6 +72,12 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["B", "C4", "E", "F", "I", "N", "PT", "RUF", "SIM", "UP", "W"]
+
+[tool.pymarkdown]
+# Paragraphs are one line each, so line length doesn't apply.
+plugins.md013.enabled = false
+# A bold line labels the table under it, as in docs/rules/scn004.md.
+plugins.md036.enabled = false
 
 [tool.mypy]
 python_version = "3.11"

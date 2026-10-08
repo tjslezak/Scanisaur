@@ -1,7 +1,5 @@
 # Decision log
 
-## Decision log
-
 Every `scanisaur check` adds one JSON line to the decision log (OSS-18). The log is a directory of monthly files such as `2026-10.jsonl`, in the user state directory by default (`~/.local/state/scanisaur/log` on Linux). Turn it off, or move it, in `scanisaur.yaml`:
 
 ```yaml

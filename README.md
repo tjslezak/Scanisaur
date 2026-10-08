@@ -1,4 +1,5 @@
 # Scanisaur
+
 The apex predator of agent-generated SQL.
 
 Scanisaur is an [MCP](https://modelcontextprotocol.io) server that AI agents call **before** they run SQL. It reads only warehouse metadata (tables, columns, types, partitioning, clustering, row counts and sizes) and uses it to:
